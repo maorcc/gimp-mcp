@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gimp-mcp"
+version = "0.1.0"
+description = "GIMP MCP integration for external control of GIMP 3.0"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.11"
+dependencies = [
+    "mcp",
+    "fastmcp",
+]
+
+[project.scripts]
+gimp-mcp-server = "gimp_mcp_server:main"

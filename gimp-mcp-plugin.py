@@ -50,7 +50,7 @@ class MCPPlugin(Gimp.PlugIn):
                                     _("Starts an MCP server to control GIMP externally"),
                                     name)
         procedure.set_attribution("Your Name", "Your Name", "2023")
-        procedure.add_menu_path('<Image>/Filters/')
+        procedure.add_menu_path('<Image>/Tools/')
         return procedure
 
     def run(self, procedure, run_mode, image, drawables, config, run_data):

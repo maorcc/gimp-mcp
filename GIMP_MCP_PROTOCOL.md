@@ -1,7 +1,7 @@
-# GIMP Python-Fu via MCP Documentation
+# GIMP PyGObject via MCP Documentation
 
 ## Overview
-This document describes how to execute Python-Fu commands in GIMP using the MCP (Model Context Protocol) interface through the `gimp:call_api` function.
+This document describes how to execute PyGObject commands in GIMP using the MCP (Model Context Protocol) interface through the `gimp:call_api` function.
 
 ## Basic Method
 
@@ -9,14 +9,14 @@ This document describes how to execute Python-Fu commands in GIMP using the MCP 
 ```json
 {
   "api_path": "exec",
-  "args": ["python-fu-console", ["<python_code>"]]
+  "args": ["pyGObject-console", ["<python_code>"]]
 }
 ```
 
 ### Parameters Explanation
 - **api_path**: `"exec"` - Accesses GIMP's Procedure Database (PDB) to run a procedure
 - **args**: Array with two elements:
-  - `"python-fu-console"` - The Python-Fu console procedure name
+  - `"pyGObject-console"` - The PyGObject console procedure name
   - `["<python_code>"]` - Array containing the Python code string to execute
          all commands are executed in the same process context, 
          so ["x=5","print(x)"] will work
@@ -27,7 +27,7 @@ This document describes how to execute Python-Fu commands in GIMP using the MCP 
 ```json
 {
   "api_path": "exec",
-  "args": ["python-fu-console", ["print('hello world')"]]
+  "args": ["pyGObject-console", ["print('hello world')"]]
 }
 ```
 
@@ -37,7 +37,7 @@ This document describes how to execute Python-Fu commands in GIMP using the MCP 
 ```json
 {
   "api_path": "exec",
-  "args": ["python-fu-eval", ["2 + 2"]]
+  "args": ["pyGObject-eval", ["2 + 2"]]
 }
 ```
 
@@ -50,18 +50,18 @@ This document describes how to execute Python-Fu commands in GIMP using the MCP 
 - Or escape double quotes: `["print(\"hello world\")"]`
 - Python code must be properly escaped as a JSON string
 
-### Python-Fu Procedure Types
-- **`python-fu-console`**: Executes Python code and returns output.
-- **`python-fu-eval`**: Evaluates Python expressions and returns the actual result value.
+### PyGObject Procedure Types
+- **`pyGObject-console`**: Executes Python code and returns output.
+- **`pyGObject-eval`**: Evaluates Python expressions and returns the actual result value.
 
 ### Return Values
-- **python-fu-console**: Returns command output on success, error messages on failure
-- **python-fu-eval**: Returns the actual result of the Python expression
-- Print statements from python-fu-console are returned in MCP response
+- **pyGObject-console**: Returns command output on success, error messages on failure
+- **pyGObject-eval**: Returns the actual result of the Python expression
+- Print statements from pyGObject-console are returned in MCP response
 - Errors will return error messages or exception details
 
 ### Limitations
-- Commands execute in GIMP's Python-Fu environment
+- Commands execute in GIMP's PyGObject environment
 - Access to GIMP's Python API and loaded modules
 
 ## GIMP 3.0 API Findings
@@ -131,14 +131,14 @@ Gimp.displays_flush()
 ```json
 {
   "api_path": "exec",
-  "args": ["python-fu-console", ["images = Gimp.get_images(); image = images[0]; layers = image.get_layers(); print(f'Found {len(images)} images with {len(layers)} layers')"]]
+  "args": ["pyGObject-console", ["images = Gimp.get_images(); image = images[0]; layers = image.get_layers(); print(f'Found {len(images)} images with {len(layers)} layers')"]]
 }
 ```
 - **draw a diagonal line from [0,200] to [200,0]** 
 ```json
 {
   "api_path": "exec",
-  "args": ["python-fu-console", [
+  "args": ["pyGObject-console", [
     "from gi.repository import Gimp",
     "images = Gimp.get_images()", 
     "image = images[0]", 
