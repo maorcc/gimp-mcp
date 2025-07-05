@@ -35,6 +35,7 @@ class MCPPlugin(Gimp.PlugIn):
         self.socket = None
         self.server_thread = None
         self.context = {}
+        exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
 
     def do_query_procedures(self):
