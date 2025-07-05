@@ -49,8 +49,6 @@ Add these lines to your Claude Desktop configuration file. (On Linux/macOS: ~/.c
 
 ## Usage
 
-1. Open any image in GIMP, Under Tools manu click `Start MCP Server`.
+1. Open any image in GIMP, Under Tools menu click `Start MCP Server`.
 1. Start Claude Desktop
-1. Tell Claude to read the file GIMP_MCP_PROTOCOL.md
-1. Tell Claude to read the file RECIPES.md
-1. Tell claude to do something with GIMP, like "Draw a line".
+1. Tell Claude to do something with GIMP, like "Draw a line".
