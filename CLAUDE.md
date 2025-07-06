@@ -56,15 +56,7 @@ The main interface is the `call_api` tool with parameters:
 ```json
 {
   "api_path": "exec",
-  "args": ["python-fu-console", ["print('hello world')"]]
-}
-```
-
-**Evaluate Expressions:**
-```json
-{
-  "api_path": "exec", 
-  "args": ["python-fu-eval", ["2 + 2"]]
+  "args": ["exec", ["print('hello world')"]]
 }
 ```
 
@@ -72,14 +64,12 @@ The main interface is the `call_api` tool with parameters:
 
 - Use `Gimp.get_images()` instead of deprecated `Gimp.list_images()`
 - Access layers via `image.get_layers()` instead of `Gimp.get_active_layer()`
-- Import `from gi.repository import Gimp, Gegl` for full API access
 - Colors are created with `Gegl.Color.new('color_name')`
 - Always call `Gimp.displays_flush()` after drawing operations
 
 ### Essential Initialization Pattern
 Most GIMP operations should start with this initialization:
 ```python
-from gi.repository import Gimp
 images = Gimp.get_images()
 image = images[0]  # or image1 = images[0]
 layers = image.get_layers()
@@ -97,7 +87,6 @@ Gimp.displays_flush()
 
 **Setting colors:**
 ```python
-from gi.repository import Gegl
 red_color = Gegl.Color.new("red")
 Gimp.context_set_foreground(red_color)
 ```
