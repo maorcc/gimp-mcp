@@ -65,6 +65,7 @@ The main interface is the `call_api` tool with parameters:
 - Use `Gimp.get_images()` instead of deprecated `Gimp.list_images()`
 - Access layers via `image.get_layers()` instead of `Gimp.get_active_layer()`
 - Colors are created with `Gegl.Color.new('color_name')`
+  or with color RGB values, e.g. `Gegl.Color.new("rgb(1.0, 0.647, 0.0)")`. Notice, each RGB value is in the range 0-1
 - Always call `Gimp.displays_flush()` after drawing operations
 
 ### Essential Initialization Pattern
