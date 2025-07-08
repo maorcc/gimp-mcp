@@ -114,13 +114,10 @@ uv run --directory your/path/to/gimp-mcp-server server.py
 
 ## Suggestions for Improvement
 
-- **Socket connection reliability**: Add connection pooling, auto-reconnection, and timeout handling for the socket communication between MCP server and GIMP plugin
-- **Command validation**: Implement Python code validation and sanitization before sending to GIMP to prevent unsafe operations
+- **Add Recipes**: Create a collection of common GIMP tasks and workflows as MCP recipes.
 - **API discovery**: Create dynamic tool discovery that exposes available GIMP functions as separate MCP tools instead of requiring manual PyGObject code
-- **Session management**: Add persistent session handling to maintain GIMP state across multiple MCP client connections
 - **Error context**: Enhance error messages with specific GIMP API context, line numbers, and suggested fixes for common issues
-- **Performance batching**: Implement command batching to reduce socket round-trips for complex multi-step operations
-- **GIMP plugin robustness**: Add plugin lifecycle management, graceful shutdown, and recovery from GIMP crashes or restarts
+- **GIMP plugin robustness**: Make sure resources are released appropriately, and prevent misconduct from mcp client on the PyGObject API.
 
 ## Contributing
 
