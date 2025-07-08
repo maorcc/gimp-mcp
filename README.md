@@ -51,4 +51,8 @@ Add these lines to your Claude Desktop configuration file. (On Linux/macOS: ~/.c
 
 1. Open any image in GIMP, Under Tools menu click `Start MCP Server`.
 1. Start Claude Desktop
-1. Tell Claude to do something with GIMP, like "Draw a face with Gimp".
+1. Tell Claude to do something with GIMP, like "Draw a face and a sheep with Gimp".
+
+<img src="gimp-screenshot1.png" alt="GIMP MCP Example" width="400">
+
+*Example output from the prompt "draw me a face and a sheep" using GIMP MCP*
