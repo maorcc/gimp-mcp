@@ -9,22 +9,24 @@ Users can describe what they want to achieve - from basic photo adjustments to s
 The project is functional and exposes all GIMP features via MCP. The main development focus is creating comprehensive AI-readable documentation to help AI agents use GIMP efficiently.
 
 
-## Prerequesits
-- GIMP 3.0 and above
+## Prerequisites
+* **GIMP 3.0 and above:** This project is developed and tested with GIMP 3.0.
+* **Claude Desktop or any other AI tool that supports MCP** .
+* **uv:** A modern Python package installer and resolver.
 
 ## Installation
 
-### 1. Install the gimp plugin for mcp server
+### 1. Install the GIMP plugin for mcp server
 
 To install the plugin, copy the `gimp-mcp-plugin.py` to your GIMP `plug-ins` directory.
 
 For detailed instructions on locating your GIMP plugins folder across different operating systems, please refer to this guide:
 
-[**GIMP Plugin Installation ``Guide (Wikibooks)**](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
+[**GIMP Plugin Installation Guide (Wikibooks)**](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
 Make sure the plugin file has "execute" permission.
 
-For example, if your gimp is installed with snap, you can use the following commands to copy the plugin to the correct directory:
+For example, if your GIMP is installed with snap, you can use the following commands to copy the plugin to the correct directory:
 ```bash
 mkdir ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin
 cp gimp-mcp-plugin.py ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin
