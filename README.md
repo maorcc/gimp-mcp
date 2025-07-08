@@ -115,6 +115,8 @@ uv run --directory your/path/to/gimp-mcp-server server.py
 ## Suggestions for Improvement
 
 - **Add Recipes**: Create a collection of common GIMP tasks and workflows as MCP recipes.
+- **Undo capabilities**: Implement a way to undo actions in GIMP through the MCP interface.
+- **Visual feedback**: Provide visual feedback to the MCP client for actions performed in GIMP, such as showing the modified image or layer.
 - **API discovery**: Create dynamic tool discovery that exposes available GIMP functions as separate MCP tools instead of requiring manual PyGObject code
 - **Error context**: Enhance error messages with specific GIMP API context, line numbers, and suggested fixes for common issues
 - **GIMP plugin robustness**: Make sure resources are released appropriately, and prevent misconduct from mcp client on the PyGObject API.
