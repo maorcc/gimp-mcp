@@ -1,5 +1,8 @@
 # GIMP MCP
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Works with Claude Desktop](https://img.shields.io/badge/Works%20with-Claude%20Desktop-7B2CBF.svg)](https://claude.ai/desktop)
+
 ## Overview
 
 This project enables non-technical users to edit images with GIMP through simple conversational commands, bridging the gap between GIMP's powerful capabilities and natural language interaction. It also allows professionals to execute complex multi-step workflows faster than traditional point-and-click methods.
