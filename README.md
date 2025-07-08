@@ -11,7 +11,7 @@ The project is functional and exposes all GIMP features via MCP. The main develo
 
 ## Prerequisites
 * **GIMP 3.0 and above:** This project is developed and tested with GIMP 3.0.
-* **Claude Desktop or any other AI tool that supports MCP** .
+* **MCP-compatible AI client:** Claude Desktop, Gemini CLI, PydanticAI, or other MCP clients.
 * **uv:** A modern Python package installer and resolver.
 
 ## Installation
@@ -38,7 +38,9 @@ Restart GIMP.
 Open any image in GIMP, and then you should see a new menu item under `Tools > Start MCP Server`. Click it to start the MCP server.
 
 
-### 2. Install the mcp server
+### 2. Configure MCP Client
+Configure your MCP client:
+#### Claude Desktop
 Add these lines to your Claude Desktop configuration file. (On Linux/macOS: ~/.config/Claude/claude_desktop_config.json )
 ```json
 {
@@ -55,15 +57,70 @@ Add these lines to your Claude Desktop configuration file. (On Linux/macOS: ~/.c
 }
 ```
 
+#### Gemini CLI
+Configure your Gemini CLI MCP server in `~/.config/gemini/.gemini_config.json`:
+```json
+{
+  "mcpServers": {
+    "gimp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "your/path/to/gimp-mcp-server",
+        "server.py"
+      ]
+    }
+  }
+}
+```
+
+#### PydanticAI
+For PydanticAI agents, use the MCPServerStdio class:
+```python
+from pydantic_ai import Agent
+from pydantic_ai.mcp import MCPServerStdio
+
+server = MCPServerStdio(
+    'uv',
+    args=[
+        'run',
+        '--directory',
+        'your/path/to/gimp-mcp-server',
+        'server.py'
+    ]
+)
+
+agent = Agent('openai:gpt-4o', mcp_servers=[server])
+```
+
+#### Other MCP Clients
+For other MCP clients that support stdio transport, use the command:
+```bash
+uv run --directory your/path/to/gimp-mcp-server server.py
+```
+
 ## Usage
 
+**Note:** Ensure your MCP client is configured with the GIMP MCP server before starting.
+
 1. Open any image in GIMP, Under Tools menu click `Start MCP Server`.
-1. Start Claude Desktop
-1. Tell Claude to do something with GIMP, like "Draw a face and a sheep with Gimp".
+2. Start your MCP client (Claude Desktop, Gemini CLI, etc.)
+3. Tell the AI to interact with GIMP, like "Draw a face and a sheep with Gimp".
 
 <img src="gimp-screenshot1.png" alt="GIMP MCP Example" width="400">
 
 *Example output from the prompt "draw me a face and a sheep" using GIMP MCP*
+
+## Suggestions for Improvement
+
+- **Socket connection reliability**: Add connection pooling, auto-reconnection, and timeout handling for the socket communication between MCP server and GIMP plugin
+- **Command validation**: Implement Python code validation and sanitization before sending to GIMP to prevent unsafe operations
+- **API discovery**: Create dynamic tool discovery that exposes available GIMP functions as separate MCP tools instead of requiring manual PyGObject code
+- **Session management**: Add persistent session handling to maintain GIMP state across multiple MCP client connections
+- **Error context**: Enhance error messages with specific GIMP API context, line numbers, and suggested fixes for common issues
+- **Performance batching**: Implement command batching to reduce socket round-trips for complex multi-step operations
+- **GIMP plugin robustness**: Add plugin lifecycle management, graceful shutdown, and recovery from GIMP crashes or restarts
 
 ## Contributing
 
