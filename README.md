@@ -56,3 +56,7 @@ Add these lines to your Claude Desktop configuration file. (On Linux/macOS: ~/.c
 <img src="gimp-screenshot1.png" alt="GIMP MCP Example" width="400">
 
 *Example output from the prompt "draw me a face and a sheep" using GIMP MCP*
+
+## Contributing
+
+Contributions are welcome! Whether it's bug fixes, new features, or documentation improvements, feel free to submit a Pull Request or open an issue.
