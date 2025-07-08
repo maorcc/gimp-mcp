@@ -1,7 +1,13 @@
 # GIMP MCP
 
 ## Overview
-This document describes how to install and use the GIMP MCP, which gives Claude Desktop and other MCP clients the option to control GIMP.
+
+This project enables non-technical users to edit images with GIMP through simple conversational commands, bridging the gap between GIMP's powerful capabilities and natural language interaction. It also allows professionals to execute complex multi-step workflows faster than traditional point-and-click methods.
+
+Users can describe what they want to achieve - from basic photo adjustments to sophisticated artistic modifications. For example, "brighten the background and add a vintage filter" or "remove the red-eye and sharpen the subject" - and the system translates these requests into precise GIMP operations.
+
+The project is functional and exposes all GIMP features via MCP. The main development focus is creating comprehensive AI-readable documentation to help AI agents use GIMP efficiently.
+
 
 ## Prerequesits
 - GIMP 3.0 and above
