@@ -2,10 +2,12 @@
 # GIMP MCP Server Script
 # Provides an MCP interface to control GIMP via a socket connection.
 
-from mcp.server.fastmcp import FastMCP, Context  # Adjust based on your MCP library
+from mcp.server.fastmcp import FastMCP, Context, Image  # Adjust based on your MCP library
 import socket
 import json
 import logging
+import base64
+import traceback
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
@@ -30,12 +32,27 @@ class GimpConnection:
     def send_command(self, command_type, params=None):
         if not self.sock:
             self.connect()
-        command = {"type": command_type, "params": params or {}}
+        command = {"type": command_type, "params": params or {"args": []}}
         try:
             self.sock.sendall(json.dumps(command).encode('utf-8'))
-            response = self.sock.recv(1024)
+            
+            # Receive response in chunks for large data
+            response_data = b''
+            while True:
+                chunk = self.sock.recv(8192)
+                if not chunk:
+                    break
+                response_data += chunk
+                
+                # Try to parse as complete JSON
+                try:
+                    json.loads(response_data.decode('utf-8'))
+                    break  # Complete JSON received
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue  # Need more data
+                    
             self.sock = None
-            return json.loads(response.decode('utf-8'))
+            return json.loads(response_data.decode('utf-8'))
         except Exception as e:
             logger.error(f"Communication error: {e}")
             self.sock = None
@@ -55,6 +72,42 @@ def get_gimp_connection():
 mcp = FastMCP("GimpMCP", description="GIMP integration through MCP")
 
 @mcp.tool()
+def get_image_bitmap(ctx: Context) -> Image:
+    """Get the current open image in GIMP as an Image object.
+    
+    Returns the currently active image (or first open image) as a PNG Image
+    that can be directly processed by Claude and other MCP clients.
+    
+    Returns:
+    - Image object containing PNG data in MCP-compliant format
+    - Raises exception if no images are open or export fails
+    
+    The returned Image object automatically handles base64 encoding and MIME types
+    according to the Model Context Protocol specification.
+    """
+    try:
+
+        print("Requesting current image bitmap from GIMP...")
+
+        conn = get_gimp_connection()
+        result = conn.send_command("get_image_bitmap")
+        if result["status"] == "success":
+            # Extract the base64 image data 
+            image_info = result["results"]
+            base64_data = image_info["image_data"]
+
+            as_bytes = base64.b64decode(base64_data)
+
+            # Return as MCP Image object (base64 data will be handled automatically)
+            return Image(data=as_bytes, format="png")
+        else:
+            raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"Failed to get image bitmap: {e}")
+
+
+@mcp.tool()
 def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) -> str:
     """Call GIMP 3.0 API methods through PyGObject console.
 
@@ -64,6 +117,9 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     - args[1] should be array of Python code strings to execute
     - Commands execute in persistent context - imports and variables persist
     - Always call Gimp.displays_flush() after drawing operations
+
+    For image operations, use get_image_bitmap()
+    which return proper MCP Image objects that Claude can process directly.
 
     Optional Initialization Pattern:
     ["images = Gimp.get_images()", "image1 = images[0]",

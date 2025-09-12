@@ -6,6 +6,9 @@ import json
 import socket
 import traceback
 import threading
+import base64
+import tempfile
+import os
 
 import gi
 gi.require_version('Gimp', '3.0')
@@ -102,23 +105,56 @@ class MCPPlugin(Gimp.PlugIn):
         # print("Client handler started")
         buffer = b''
 
-        data = client.recv(4096)
-        # print(f"Received data: {data}")
-        if not data:
+        # Receive data in chunks to handle larger payloads
+        while True:
+            data = client.recv(4096)
+            # print(f"Received data: {data}")
+            if not data:
+                break
+            buffer += data
+            
+            # Check if we have a complete message
+            # For simplicity, assume messages end with newline or are complete JSON
+            try:
+                if isinstance(buffer, (bytes, bytearray)):
+                    request = buffer.decode('utf-8')
+                else:
+                    request = str(buffer)
+                
+                # Try to parse as JSON to see if complete
+                if request.strip():
+                    json.loads(request)  # This will raise if incomplete
+                    break
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Continue receiving if JSON is incomplete
+                continue
+        
+        if not buffer:
             print("Client disconnected")
             return
 
-        buffer += data
-        if isinstance(data, (bytes, bytearray)):
-            request = str(buffer, "utf-8")
-        else:
+        if isinstance(buffer, (bytes, bytearray)):
             request = buffer.decode('utf-8')
+        else:
+            request = str(buffer)
+        
         # print(f"Parsed request: {request}")
         response = self.execute_command(request)
-        print(f"response: {response}")
+        print(f"response type: {type(response)}")
+        
         if isinstance(response, dict):
-            response = json.dumps(response)
-        client.sendall(response.encode('utf-8'))
+            response_str = json.dumps(response)
+        else:
+            response_str = str(response)
+            
+        # Send response in chunks for large data
+        response_bytes = response_str.encode('utf-8')
+        bytes_sent = 0
+        while bytes_sent < len(response_bytes):
+            chunk = response_bytes[bytes_sent:bytes_sent + 8192]
+            client.sendall(chunk)
+            bytes_sent += len(chunk)
+            
         if self.auto_disconnect_client:
             client.close()
         return
@@ -134,7 +170,9 @@ class MCPPlugin(Gimp.PlugIn):
                     "results": "OK"
                 }
             j = json.loads(request)
-            if "cmds" in j:
+            if "type" in j and j["type"] == "get_image_bitmap":
+                return self._get_current_image_bitmap()
+            elif "cmds" in j:
                 a = ['python-fu-exec', j["cmds"]]
             else:
                 p = j["params"]
@@ -171,6 +209,148 @@ class MCPPlugin(Gimp.PlugIn):
 
         except Exception as e:
             error_msg = f"Error executing command: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+
+    def _get_current_image_bitmap(self):
+        """Get the current image as a base64-encoded bitmap."""
+        try:
+
+            print("Getting current image bitmap...")
+
+            # Get the current images
+            images = Gimp.get_images()
+            if not images:
+                return {
+                    "status": "error",
+                    "error": "No images are currently open in GIMP"
+                }
+            
+            # Use the first image (most recently active)
+            image = images[0]
+            
+            # Create a temporary file for export
+            temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
+            os.close(temp_fd)  # Close the file descriptor as GIMP will handle the file
+            
+            try:
+                # Export the image as PNG
+                # In GIMP 3.0, we need to flatten the image for export or get all layers
+                drawable = None
+                
+                # Get all layers - we'll export the flattened image
+                layers = image.get_layers()
+                if not layers:
+                    return {
+                        "status": "error", 
+                        "error": "No layers found in the image"
+                    }
+                
+                # For PNG export, we can use all layers or the active layer
+                # In GIMP 3.0, get_active_layer is a method of image, not get_active_drawable
+                try:
+                    drawable = image.get_active_layer()
+                except (AttributeError, RuntimeError):
+                    # If get_active_layer doesn't exist or fails, use the first layer
+                    drawable = layers[0]
+                
+                if not drawable:
+                    drawable = layers[0]
+                
+                # Export the image to PNG
+                try:
+                    # In GIMP 3.0, use the simplified export approach
+                    from gi.repository import Gio
+                    file_obj = Gio.File.new_for_path(temp_path)
+                    
+                    # Use file-png-export with the correct parameters for GIMP 3.0
+                    export_proc = Gimp.get_pdb().lookup_procedure('file-png-export')
+                    if not export_proc:
+                        return {
+                            "status": "error",
+                            "error": "PNG export procedure not found"
+                        }
+                    
+                    export_config = export_proc.create_config()
+                    export_config.set_property('image', image)
+                    export_config.set_property('file', file_obj)
+                    # Try different property names that might exist
+                    try:
+                        export_config.set_property('drawable', drawable)
+                    except:
+                        try:
+                            export_config.set_property('drawables', [drawable])
+                        except:
+                            # Some export procedures might not need drawable specification
+                            pass
+                    
+                    result = export_proc.run(export_config)
+                    print(f"Export result: {result}")
+                    
+                except Exception as export_error:
+                    print(f"Export error: {export_error}")
+                    # Fallback: try using the PDB directly with correct arguments
+                    try:
+                        from gi.repository import Gio
+                        file_obj = Gio.File.new_for_path(temp_path)
+                        
+                        # Try alternative approach using Gimp.file_save with correct number of arguments
+                        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, file_obj)
+                        print("Fallback export successful")
+                    except Exception as fallback_error:
+                        print(f"Fallback export error: {fallback_error}")
+                        # Try another fallback using gimp-file-save PDB procedure
+                        try:
+                            pdb = Gimp.get_pdb()
+                            save_proc = pdb.lookup_procedure('gimp-file-save')
+                            if save_proc:
+                                save_config = save_proc.create_config()
+                                save_config.set_property('image', image)
+                                save_config.set_property('file', file_obj)
+                                save_result = save_proc.run(save_config)
+                                print(f"PDB save result: {save_result}")
+                            else:
+                                return {
+                                    "status": "error",
+                                    "error": f"All export methods failed: {export_error}, fallback: {fallback_error}"
+                                }
+                        except Exception as pdb_error:
+                            return {
+                                "status": "error",
+                                "error": f"All export methods failed: {export_error}, fallback: {fallback_error}, PDB: {pdb_error}"
+                            }
+                
+                # Read the exported file and encode as base64
+                with open(temp_path, 'rb') as f:
+                    image_data = f.read()
+                    encoded_image = base64.b64encode(image_data).decode('utf-8')
+                
+                # Get image metadata
+                width = image.get_width()
+                height = image.get_height()
+                
+                return {
+                    "status": "success",
+                    "results": {
+                        "image_data": encoded_image,
+                        "format": "png",
+                        "width": width,
+                        "height": height,
+                        "encoding": "base64"
+                    }
+                }
+                
+            finally:
+                # Clean up the temporary file
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                    
+        except Exception as e:
+            error_msg = f"Error getting image bitmap: {str(e)}\n{traceback.format_exc()}"
             print(error_msg)
             return {
                 "status": "error",
