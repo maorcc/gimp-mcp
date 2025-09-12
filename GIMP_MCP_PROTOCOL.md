@@ -1,7 +1,33 @@
 # GIMP PyGObject via MCP Documentation
 
 ## Overview
-This document describes how to execute PyGObject commands in GIMP using the MCP (Model Context Protocol) interface through the `gimp:call_api` function.
+This document describes how to execute PyGObject commands in GIMP using the MCP (Model Context Protocol) interface. The GIMP MCP server provides multiple tools for interacting with GIMP 3.0, including image export capabilities that return MCP-compliant Image objects.
+
+## Available MCP Tools
+
+### 1. Image Export Tools
+
+#### `get_image_bitmap()` 
+Returns the current open image as an MCP-compliant Image object in PNG format.
+- **Returns**: Image object that Claude can directly process
+- **Format**: PNG
+- **MCP Compliant**: Yes - returns proper ImageContent structure
+
+### 2. General API Tool
+
+#### `call_api(api_path, args=[], kwargs={})`
+
+Execute GIMP 3.0 API methods through PyGObject console.
+
+**GIMP MCP Protocol:**
+- Use api_path="exec" to execute Python code in GIMP
+- args[0] should be "pyGObject-console" for executing commands
+- args[1] should be array of Python code strings to execute
+- Commands execute in persistent context - imports and variables persist
+- Always call Gimp.displays_flush() after drawing operations
+
+For image operations, use `get_image_bitmap()`
+which return proper MCP Image objects that Claude can process directly.
 
 ## Basic Method
 
@@ -77,6 +103,11 @@ This document describes how to execute PyGObject commands in GIMP using the MCP 
   layers = image.get_layers()  # Returns list of Layer objects
   ```
 
+- **`image.get_active_layer()`**: Gets the active layer from an image
+  ```python
+  active_layer = image.get_active_layer()  # Returns Layer object
+  ```
+
 - **Get foreground color** 
   ```python
     fg_color = Gimp.context_get_foreground(); 
@@ -106,18 +137,57 @@ Gimp.pencil(Gimp.get_images().get_layers()[0], [0, 0, 200, 200])
 Gimp.displays_flush()
     ```
 
-- **draw a filled ellipse**: 
+- **Draw a filled ellipse**: 
   ```python
-Gimp.Image.select_ellipse(image, Gimp.ChannelOps.REPLACE, 100, 100, 30, 20)
-Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
-Gimp.displays_flush()
-    ```
+  Gimp.Image.select_ellipse(image, Gimp.ChannelOps.REPLACE, 100, 100, 30, 20)
+  Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
+  Gimp.Selection.none(image)
+  Gimp.displays_flush()
+  ```
+
+- **Paint curve with paintbrush**:
+  ```python
+  Gimp.paintbrush_default(drawable, [50.0, 50.0, 150.0, 200.0, 250.0, 50.0, 350.0, 200.0])
+  Gimp.displays_flush()
+  ```
+
+- **Draw bezier curve**:
+  ```python
+  path = Gimp.Path.new(image, 'my_bezier_path')
+  image.insert_path(path, None, 0)
+  stroke_id = path.bezier_stroke_new_moveto(100, 100)
+  path.bezier_stroke_cubicto(stroke_id, 150, 50, 250, 150, 300, 100)
+  Gimp.Drawable.edit_stroke_item(drawable, path)
+  Gimp.Selection.none(image)
+  Gimp.displays_flush()
+  ```
+
+- **Create new image**:
+  ```python
+  image = Gimp.Image.new(350, 800, Gimp.ImageBaseType.RGB)
+  layer = Gimp.Layer.new(image, 'Background', 350, 800, Gimp.ImageType.RGB_IMAGE, 100, Gimp.LayerMode.NORMAL)
+  image.insert_layer(layer, None, 0)
+  drawable = layer
+  white_color = Gegl.Color.new('white')
+  Gimp.context_set_background(white_color)
+  Gimp.Drawable.edit_fill(drawable, Gimp.FillType.BACKGROUND)
+  Gimp.Display.new(image)
+  ```
+
+### Important Tips
+- When filling layers with color, ensure layer has alpha channel using `Gimp.Layer.add_alpha()`
+- Use `Gimp.Drawable.fill()` for reliable full-layer fills
+- Specify colors precisely with rgb(R, G, B) or rgba(R, G, B, A) to avoid transparency issues
+- After drawing operations, always call `Gimp.displays_flush()`
+- After selection operations for drawing, unselect with `Gimp.Selection.none(image)`
+- Use `from gi.repository import Gio` for file operations: `Gio.File.new_for_path(path)`
 
 ### Non-Working Methods (GIMP 3.0 Changes)
 - **`Gimp.get_active_image()`**: ❌ Does not exist
 - **`Gimp.list_images()`**: ❌ Does not exist  
-- **`Gimp.get_active_layer()`**: ❌ Does not exist
+- **`Gimp.get_active_layer()`**: ❌ Does not exist (use `image.get_active_layer()` instead)
 - **`from gimpfu import *`**: ❌ gimpfu module not available in GIMP 3.0
+- **`Gimp.file_new_for_path()`**: ❌ Use `Gio.File.new_for_path()` instead
 
 ### API Structure Insights
 - GIMP 3.0 uses GObject Introspection (gi.repository.Gimp)
@@ -125,6 +195,10 @@ Gimp.displays_flush()
 - Image objects: `<Gimp.Image object at 0x... (GimpImage at 0x...)>`
 - Layer objects: `<Gimp.Layer object at 0x... (GimpLayer at 0x...)>`
 - The API has significantly changed from GIMP 2.x to 3.0
+- Colors are created with `Gegl.Color.new('color_name')`
+- File objects use Gio library: `from gi.repository import Gio`
+
+### Tested Working Examples
 
 ### Tested Working Example
 - **Get layers** 
@@ -148,8 +222,55 @@ Gimp.displays_flush()
     "Gimp.context_set_brush_size(2.0)",
     "Gimp.pencil(drawable, [0, 200, 200, 0])",
     "Gimp.displays_flush()"
-  ]]}
+  ]]
+}
 ```
+
+#### Initialize Working Context
+```json
+{
+  "api_path": "exec",
+  "args": ["pyGObject-console", [
+    "images = Gimp.get_images()",
+    "image1 = images[0]",
+    "layers = image1.get_layers()",
+    "layer1 = layers[0]",
+    "drawable1 = layer1"
+  ]]
+}
+```
+
+## MCP Image Export Integration
+
+### Direct Image Access
+The GIMP MCP server now provides dedicated tools for image export that return MCP-compliant Image objects:
+
+#### Using `get_image_bitmap()`
+```python
+# This returns an Image object that Claude can directly process
+image = get_image_bitmap()
+```
+
+## Plugin Architecture
+
+### Connection Protocol
+- **Host**: localhost (default)
+- **Port**: 9877 (default)
+- **Transport**: TCP socket
+- **Format**: JSON messages
+- **Auto-disconnect**: Configurable (default: true)
+
+### Command Types
+1. **`"get_image_bitmap"`**: Direct bitmap export
+2. **`"disable_auto_disconnect"`**: Keep connection alive
+3. **JSON with `"cmds"`**: Execute command array  
+4. **JSON with `"params"`**: Structured API calls
+
+### Error Handling
+- Multiple export fallback methods
+- Robust error reporting with tracebacks
+- Graceful handling of missing procedures
+- Property name flexibility for different GIMP versions
 
 ## Potential Use Cases
 - Execute GIMP automation scripts
