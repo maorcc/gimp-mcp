@@ -108,6 +108,38 @@ def get_image_bitmap(ctx: Context) -> Image:
 
 
 @mcp.tool()
+def get_image_metadata(ctx: Context) -> dict:
+    """Get metadata about the current open image in GIMP without the bitmap data.
+    
+    Returns detailed information about the currently active image including:
+    - Image dimensions (width, height)
+    - Color mode and base type
+    - Number of layers and channels
+    - File information if available
+    - Layer structure and properties
+    
+    This is much faster than get_image_bitmap() since it doesn't export the actual image data.
+    Perfect for when you only need to know image properties for decision making.
+    
+    Returns:
+    - Dictionary containing comprehensive image metadata
+    - Raises exception if no images are open
+    """
+    try:
+        print("Requesting current image metadata from GIMP...")
+        
+        conn = get_gimp_connection()
+        result = conn.send_command("get_image_metadata")
+        if result["status"] == "success":
+            return result["results"]
+        else:
+            raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"Failed to get image metadata: {e}")
+
+
+@mcp.tool()
 def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) -> str:
     """Call GIMP 3.0 API methods through PyGObject console.
 
