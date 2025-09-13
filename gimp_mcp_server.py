@@ -72,25 +72,62 @@ def get_gimp_connection():
 mcp = FastMCP("GimpMCP", description="GIMP integration through MCP")
 
 @mcp.tool()
-def get_image_bitmap(ctx: Context) -> Image:
-    """Get the current open image in GIMP as an Image object.
+def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None) -> Image:
+    """Get the current open image in GIMP as an Image object with optional scaling and region selection.
     
-    Returns the currently active image (or first open image) as a PNG Image
-    that can be directly processed by Claude and other MCP clients.
+    RECOMMENDED USAGE:
+    - Use max_width=1024, max_height=1024 by default for optimal performance and manageable file sizes
+    - Call get_image_metadata() first to understand image dimensions before extraction
+    - Large images without scaling can result in very large data transfers
+    
+    Supports two main use cases:
+    1. Full image with optional scaling (pass max_width/max_height)
+    2. Region extraction with optional scaling (pass region dict)
+    
+    Parameters:
+    - max_width, max_height: Target dimensions for scaling (center inside scaling)
+      RECOMMENDED: Use 1024x1024 as default maximum for optimal performance
+    - region: Dictionary with keys:
+        - origin_x, origin_y: Top-left corner of region to extract
+        - width, height: Dimensions of region to extract  
+        - max_width, max_height: Target dimensions for scaling extracted region (center inside scaling)
+    
+    Best Practice Workflow:
+    1. Call get_image_metadata() to get original image dimensions
+    2. Determine appropriate scaling or region based on image size
+    3. Call get_image_bitmap() with recommended max_width=1024, max_height=1024
+    
+    Examples:
+    - Recommended full image: get_image_bitmap(max_width=1024, max_height=1024)
+    - Region: get_image_bitmap(region={"origin_x": 100, "origin_y": 50, "width": 400, "height": 300})
+    - Scaled region: get_image_bitmap(region={"origin_x": 100, "origin_y": 50, "width": 400, "height": 300, "max_width": 512, "max_height": 512})
     
     Returns:
     - Image object containing PNG data in MCP-compliant format
-    - Raises exception if no images are open or export fails
+    - Includes width, height, and base64-encoded image data
     
     The returned Image object automatically handles base64 encoding and MIME types
     according to the Model Context Protocol specification.
+    
+    Raises:
+    - RuntimeError if no image is open, region is invalid, or export fails
     """
     try:
 
         print("Requesting current image bitmap from GIMP...")
 
         conn = get_gimp_connection()
-        result = conn.send_command("get_image_bitmap")
+        
+        # Build parameters for the bitmap request
+        params = {}
+        if max_width is not None:
+            params["max_width"] = max_width
+        if max_height is not None:
+            params["max_height"] = max_height
+        if region is not None:
+            params["region"] = region
+            
+        result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
             # Extract the base64 image data 
             image_info = result["results"]

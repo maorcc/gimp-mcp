@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
+"""
+GIMP MCP Plugin - Model Context Protocol integration for GIMP
+Provides bitmap extraction and metadata access functionality
+"""
+
+import gi
+gi.require_version('Gimp', '3.0')
+
+from gi.repository import Gimp
+from gi.repository import GLib
+
 import io
 import sys
 import json
@@ -11,10 +23,11 @@ import tempfile
 import os
 import platform
 
-import gi
-gi.require_version('Gimp', '3.0')
-from gi.repository import Gimp
-from gi.repository import GLib
+# Constants for configuration and thresholds
+LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
+MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
+DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
+
 
 def N_(message): return message
 def _(message): return GLib.dgettext(None, message)
@@ -172,7 +185,8 @@ class MCPPlugin(Gimp.PlugIn):
                 }
             j = json.loads(request)
             if "type" in j and j["type"] == "get_image_bitmap":
-                return self._get_current_image_bitmap()
+                params = j.get("params", {})
+                return self._get_current_image_bitmap(params)
             elif "type" in j and j["type"] == "get_image_metadata":
                 return self._get_current_image_metadata()
             elif "type" in j and j["type"] == "get_gimp_info":
@@ -221,11 +235,45 @@ class MCPPlugin(Gimp.PlugIn):
                 "traceback": traceback.format_exc()
             }
 
-    def _get_current_image_bitmap(self):
-        """Get the current image as a base64-encoded bitmap."""
+    def _get_current_image_bitmap(self, params=None):
+        """Get the current image as a base64-encoded bitmap with optional scaling and region selection."""
         try:
+            if params is None:
+                params = {}
+                
+            print(f"Getting current image bitmap with params: {params}")
 
-            print("Getting current image bitmap...")
+            # Extract parameters
+            max_width = params.get("max_width")
+            max_height = params.get("max_height")
+            
+            # Extract region parameters if provided
+            region = params.get("region", {})
+            
+            # Validate region parameters if provided
+            if region:
+                # Validate region parameter types
+                for key, expected_type in [("origin_x", int), ("origin_y", int), 
+                                         ("width", int), ("height", int),
+                                         ("max_width", int), ("max_height", int)]:
+                    if key in region and region[key] is not None:
+                        if not isinstance(region[key], expected_type):
+                            return {
+                                "status": "error",
+                                "error": f"Region parameter '{key}' must be of type {expected_type.__name__}, got {type(region[key]).__name__}"
+                            }
+                        if region[key] < 0:
+                            return {
+                                "status": "error", 
+                                "error": f"Region parameter '{key}' must be non-negative, got {region[key]}"
+                            }
+            
+            origin_x = region.get("origin_x")
+            origin_y = region.get("origin_y")
+            region_width = region.get("width")
+            region_height = region.get("height")
+            scaled_to_width = region.get("max_width")  # Region scaling uses max_width/max_height
+            scaled_to_height = region.get("max_height")
 
             # Get the current images
             images = Gimp.get_images()
@@ -236,29 +284,168 @@ class MCPPlugin(Gimp.PlugIn):
                 }
             
             # Use the first image (most recently active)
-            image = images[0]
+            original_image = images[0]
             
+            # Get original image dimensions
+            orig_img_width = original_image.get_width()
+            orig_img_height = original_image.get_height()
+            
+            # Determine working image and region
+            working_image = None
+            should_delete_working = False
+            
+            # Case 1: Region selection
+            if any(param is not None for param in [origin_x, origin_y, region_width, region_height]):
+                print("Processing region extraction...")
+                
+                # Validate region parameters
+                if origin_x is None or origin_y is None or region_width is None or region_height is None:
+                    return {
+                        "status": "error",
+                        "error": "For region selection, all parameters are required: origin_x, origin_y, width, height"
+                    }
+                
+                # Validate region bounds
+                if (origin_x < 0 or origin_y < 0 or 
+                    origin_x + region_width > orig_img_width or 
+                    origin_y + region_height > orig_img_height):
+                    return {
+                        "status": "error",
+                        "error": f"Region bounds invalid. Image size: {orig_img_width}x{orig_img_height}, "
+                               f"requested region: ({origin_x},{origin_y}) {region_width}x{region_height}"
+                    }
+                
+                # Create new image with the region
+                working_image = Gimp.Image.new(region_width, region_height, original_image.get_base_type())
+                should_delete_working = True
+                
+                # Copy the region from original image
+                # First, select the region in the original image
+                original_image.select_rectangle(Gimp.ChannelOps.REPLACE, origin_x, origin_y, region_width, region_height)
+                
+                # Get the active layer from original image
+                orig_layers = original_image.get_layers()
+                if not orig_layers:
+                    return {
+                        "status": "error",
+                        "error": "No layers found in original image"
+                    }
+                
+                # Create a new layer in working image
+                # In GIMP 3.0+, use the image's base type instead of layer.get_image_type()
+                try:
+                    # Try to get layer type - fallback to image base type
+                    if hasattr(orig_layers[0], 'get_type'):
+                        layer_type = orig_layers[0].get_type()
+                    else:
+                        # Use image base type as fallback
+                        layer_type = original_image.get_base_type()
+                except AttributeError:
+                    # Final fallback - use RGB
+                    layer_type = Gimp.ImageBaseType.RGB
+                
+                new_layer = Gimp.Layer.new(working_image, 'Region', region_width, region_height, 
+                                         layer_type, 100, Gimp.LayerMode.NORMAL)
+                working_image.insert_layer(new_layer, None, 0)
+                
+                # Copy and paste the selection
+                Gimp.edit_copy([orig_layers[0]])
+                floating_sel = Gimp.edit_paste(new_layer, True)[0]
+                Gimp.floating_sel_anchor(floating_sel)
+                
+                # Clear selection
+                try:
+                    # Try different methods to clear selection based on GIMP version
+                    if hasattr(original_image, 'select_none'):
+                        original_image.select_none()
+                    else:
+                        # Use Gimp.Selection.none() for GIMP 3.0+
+                        Gimp.Selection.none(original_image)
+                except (AttributeError, RuntimeError) as e:
+                    print(f"Warning: Could not clear selection: {e}")
+                
+            else:
+                # Case 2: Full image
+                print("Processing full image...")
+                working_image = original_image
+                should_delete_working = False
+            
+            # Now handle scaling if needed
+            final_image = working_image
+            should_delete_final = should_delete_working
+            
+            # Calculate target dimensions
+            current_width = working_image.get_width()
+            current_height = working_image.get_height()
+            target_width = current_width
+            target_height = current_height
+            
+            # Determine scaling target
+            if scaled_to_width is not None and scaled_to_height is not None:
+                # Region scaling - use scaled_to dimensions
+                max_w, max_h = scaled_to_width, scaled_to_height
+            elif max_width is not None and max_height is not None:
+                # Full image scaling - use max dimensions
+                max_w, max_h = max_width, max_height
+            else:
+                max_w = max_h = None
+            
+            # Apply center inside scaling if target dimensions provided
+            if max_w is not None and max_h is not None:
+                # Calculate center inside scaling
+                aspect_ratio = current_width / current_height
+                max_aspect_ratio = max_w / max_h
+                
+                if aspect_ratio > max_aspect_ratio:
+                    # Width is the limiting factor
+                    target_width = max_w
+                    target_height = int(max_w / aspect_ratio)
+                else:
+                    # Height is the limiting factor
+                    target_height = max_h
+                    target_width = int(max_h * aspect_ratio)
+                
+                print(f"Scaling from {current_width}x{current_height} to {target_width}x{target_height}")
+                
+                # Scale the image if dimensions changed
+                if target_width != current_width or target_height != current_height:
+                    # Create scaled image
+                    final_image = working_image.duplicate()
+                    should_delete_final = True
+                    
+                    # Scale the image with timeout consideration for large operations
+                    scaling_ratio = (target_width * target_height) / (current_width * current_height)
+                    if scaling_ratio > LARGE_SCALING_THRESHOLD:  # Scaling up significantly
+                        print(f"Warning: Large scaling operation detected (ratio: {scaling_ratio:.2f}). This may take time.")
+                    
+                    try:
+                        final_image.scale(target_width, target_height)
+                    except (RuntimeError, AttributeError) as scale_error:
+                        # Clean up and return error for scaling failures
+                        if should_delete_final:
+                            try:
+                                final_image.delete()
+                            except (AttributeError, RuntimeError):
+                                pass
+                        raise RuntimeError(f"Failed to scale image from {current_width}x{current_height} to {target_width}x{target_height}: {scale_error}")
+        
             # Create a temporary file for export
             temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
             os.close(temp_fd)  # Close the file descriptor as GIMP will handle the file
             
             try:
-                # Export the image as PNG
-                # In GIMP 3.0, we need to flatten the image for export or get all layers
-                drawable = None
-                
+                # Export the final image as PNG
                 # Get all layers - we'll export the flattened image
-                layers = image.get_layers()
+                layers = final_image.get_layers()
                 if not layers:
                     return {
                         "status": "error", 
-                        "error": "No layers found in the image"
+                        "error": "No layers found in the processed image"
                     }
                 
                 # For PNG export, we can use all layers or the active layer
-                # In GIMP 3.0, get_active_layer is a method of image, not get_active_drawable
                 try:
-                    drawable = image.get_active_layer()
+                    drawable = final_image.get_active_layer()
                 except (AttributeError, RuntimeError):
                     # If get_active_layer doesn't exist or fails, use the first layer
                     drawable = layers[0]
@@ -281,7 +468,7 @@ class MCPPlugin(Gimp.PlugIn):
                         }
                     
                     export_config = export_proc.create_config()
-                    export_config.set_property('image', image)
+                    export_config.set_property('image', final_image)
                     export_config.set_property('file', file_obj)
                     # Try different property names that might exist
                     try:
@@ -304,7 +491,7 @@ class MCPPlugin(Gimp.PlugIn):
                         file_obj = Gio.File.new_for_path(temp_path)
                         
                         # Try alternative approach using Gimp.file_save with correct number of arguments
-                        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, file_obj)
+                        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, final_image, file_obj)
                         print("Fallback export successful")
                     except Exception as fallback_error:
                         print(f"Fallback export error: {fallback_error}")
@@ -314,7 +501,7 @@ class MCPPlugin(Gimp.PlugIn):
                             save_proc = pdb.lookup_procedure('gimp-file-save')
                             if save_proc:
                                 save_config = save_proc.create_config()
-                                save_config.set_property('image', image)
+                                save_config.set_property('image', final_image)
                                 save_config.set_property('file', file_obj)
                                 save_result = save_proc.run(save_config)
                                 print(f"PDB save result: {save_result}")
@@ -334,32 +521,49 @@ class MCPPlugin(Gimp.PlugIn):
                     image_data = f.read()
                     encoded_image = base64.b64encode(image_data).decode('utf-8')
                 
-                # Get image metadata
-                width = image.get_width()
-                height = image.get_height()
+                # Get final image metadata
+                final_width = final_image.get_width()
+                final_height = final_image.get_height()
                 
                 return {
                     "status": "success",
                     "results": {
                         "image_data": encoded_image,
                         "format": "png",
-                        "width": width,
-                        "height": height,
-                        "encoding": "base64"
+                        "width": final_width,
+                        "height": final_height,
+                        "original_width": orig_img_width,
+                        "original_height": orig_img_height,
+                        "encoding": "base64",
+                        "processing_applied": {
+                            "region_extracted": any(param is not None for param in [origin_x, origin_y, region_width, region_height]),
+                            "scaled": target_width != current_width or target_height != current_height,
+                            "region_coords": {"x": origin_x, "y": origin_y, "w": region_width, "h": region_height} if origin_x is not None else None
+                        }
                     }
                 }
                 
             finally:
+                # Clean up temporary images
+                if should_delete_final and final_image != working_image:
+                    try:
+                        final_image.delete()
+                    except (AttributeError, RuntimeError) as e:
+                        print(f"Warning: Failed to delete final temporary image: {e}")
+                if should_delete_working and working_image != original_image:
+                    try:
+                        working_image.delete()
+                    except (AttributeError, RuntimeError) as e:
+                        print(f"Warning: Failed to delete working temporary image: {e}")
+                        
                 # Clean up the temporary file
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                     
-        except Exception as e:
-            error_msg = f"Error getting image bitmap: {str(e)}\n{traceback.format_exc()}"
-            print(error_msg)
+        except (RuntimeError, AttributeError, OSError, ValueError) as e:
             return {
                 "status": "error",
-                "error": str(e),
+                "error": f"Processing error: {str(e)}",
                 "traceback": traceback.format_exc()
             }
 
@@ -404,7 +608,7 @@ class MCPPlugin(Gimp.PlugIn):
                         "height": layer.get_height(),
                         "has_alpha": layer.has_alpha(),
                         "is_group": hasattr(layer, 'get_children') and callable(getattr(layer, 'get_children')),
-                        "layer_type": str(layer.get_image_type()) if hasattr(layer, 'get_image_type') else "unknown"
+                        "layer_type": self._get_layer_type_string(layer)
                     }
                     # Try to get layer mode if available
                     try:
@@ -536,27 +740,45 @@ class MCPPlugin(Gimp.PlugIn):
             return str(base_type)
 
     def _precision_to_string(self, precision):
-        """Convert GIMP precision enum to string."""
+        """Convert GIMP precision enum to readable string."""
         try:
-            # Common GIMP 3.0 precision types
             precision_map = {
-                100: "8-bit integer",
-                150: "16-bit integer", 
-                200: "32-bit integer",
-                250: "16-bit float",
-                300: "32-bit float",
-                350: "64-bit float"
+                100: "u8",      # Gimp.Precision.U8_LINEAR
+                150: "u8-gamma", # Gimp.Precision.U8_GAMMA  
+                200: "u16",     # Gimp.Precision.U16_LINEAR
+                250: "u16-gamma", # Gimp.Precision.U16_GAMMA
+                300: "u32",     # Gimp.Precision.U32_LINEAR
+                350: "u32-gamma", # Gimp.Precision.U32_GAMMA
+                500: "half",    # Gimp.Precision.HALF_LINEAR
+                550: "half-gamma", # Gimp.Precision.HALF_GAMMA
+                600: "float",   # Gimp.Precision.FLOAT_LINEAR
+                650: "float-gamma", # Gimp.Precision.FLOAT_GAMMA
+                700: "double",  # Gimp.Precision.DOUBLE_LINEAR
+                750: "double-gamma" # Gimp.Precision.DOUBLE_GAMMA
             }
-            
-            # Try to get the actual enum value if it has a name
-            if hasattr(precision, 'value_name'):
-                return precision.value_name
-            elif hasattr(precision, 'value_nick'):
-                return precision.value_nick
-            else:
-                return precision_map.get(int(precision), f"Unknown precision ({precision})")
+            return precision_map.get(int(precision), f"precision-{precision}")
         except:
             return str(precision)
+            
+    def _get_layer_type_string(self, layer):
+        """Get layer type string with compatibility for different GIMP versions."""
+        try:
+            # Try different methods to get layer type
+            if hasattr(layer, 'get_type'):
+                return str(layer.get_type())
+            elif hasattr(layer, 'get_image_type'):
+                return str(layer.get_image_type())
+            elif hasattr(layer, 'type'):
+                return str(layer.type)
+            else:
+                # Fallback - determine from layer properties
+                if layer.has_alpha():
+                    return "RGBA"
+                else:
+                    return "RGB"
+        except Exception as e:
+            print(f"Warning: Could not determine layer type: {e}")
+            return "unknown"
 
     def _get_gimp_info(self):
         """Get comprehensive information about GIMP installation and environment."""
@@ -828,10 +1050,9 @@ class MCPPlugin(Gimp.PlugIn):
             
         except Exception as e:
             error_msg = f"Error getting GIMP info: {str(e)}\n{traceback.format_exc()}"
-            print(error_msg)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": error_msg,
                 "traceback": traceback.format_exc()
             }
 
