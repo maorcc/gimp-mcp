@@ -140,6 +140,39 @@ def get_image_metadata(ctx: Context) -> dict:
 
 
 @mcp.tool()
+def get_gimp_info(ctx: Context) -> dict:
+    """Get comprehensive information about the GIMP installation and environment.
+    
+    Returns detailed information about GIMP that AI assistants need to understand
+    the current environment, including:
+    - GIMP version and build information
+    - Installation paths and directories
+    - Available plugins and procedures
+    - System configuration
+    - Runtime environment details
+    
+    This information helps AI assistants provide better support and troubleshooting
+    by understanding the specific GIMP setup they're working with.
+    
+    Returns:
+    - Dictionary containing comprehensive GIMP environment information
+    - Raises exception if GIMP connection fails
+    """
+    try:
+        print("Requesting GIMP environment information...")
+        
+        conn = get_gimp_connection()
+        result = conn.send_command("get_gimp_info")
+        if result["status"] == "success":
+            return result["results"]
+        else:
+            raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"Failed to get GIMP info: {e}")
+
+
+@mcp.tool()
 def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) -> str:
     """Call GIMP 3.0 API methods through PyGObject console.
 

@@ -9,6 +9,7 @@ import threading
 import base64
 import tempfile
 import os
+import platform
 
 import gi
 gi.require_version('Gimp', '3.0')
@@ -174,6 +175,8 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._get_current_image_bitmap()
             elif "type" in j and j["type"] == "get_image_metadata":
                 return self._get_current_image_metadata()
+            elif "type" in j and j["type"] == "get_gimp_info":
+                return self._get_gimp_info()
             elif "cmds" in j:
                 a = ['python-fu-exec', j["cmds"]]
             else:
@@ -554,5 +557,282 @@ class MCPPlugin(Gimp.PlugIn):
                 return precision_map.get(int(precision), f"Unknown precision ({precision})")
         except:
             return str(precision)
+
+    def _get_gimp_info(self):
+        """Get comprehensive information about GIMP installation and environment."""
+        try:
+            print("Getting GIMP environment information...")
+            
+            gimp_info = {}
+            
+            # Basic GIMP version and build information
+            try:
+                version_info = {}
+                
+                # Try different methods to get version info
+                try:
+                    # Try the version() method if it exists
+                    if hasattr(Gimp, 'version'):
+                        version_info["version_method"] = str(Gimp.version())
+                except Exception as v_error:
+                    version_info["version_method_error"] = str(v_error)
+                
+                # Try to get version from constants if they exist
+                for attr in ['MAJOR_VERSION', 'MINOR_VERSION', 'MICRO_VERSION']:
+                    try:
+                        if hasattr(Gimp, attr):
+                            version_info[attr.lower()] = getattr(Gimp, attr)
+                    except Exception as attr_error:
+                        version_info[f"{attr.lower()}_error"] = str(attr_error)
+                
+                # Get available version-related attributes
+                version_attrs = [attr for attr in dir(Gimp) if 'version' in attr.lower()]
+                if version_attrs:
+                    version_info["available_version_attributes"] = version_attrs
+                
+                # Try to get version string from any available source
+                version_string = "Unknown"
+                try:
+                    # Check if there's a version string constant
+                    if hasattr(Gimp, 'VERSION'):
+                        version_string = str(Gimp.VERSION)
+                    elif hasattr(Gimp, 'version_string'):
+                        version_string = str(Gimp.version_string())
+                    elif hasattr(Gimp, 'get_version'):
+                        version_string = str(Gimp.get_version())
+                except:
+                    pass
+                
+                version_info["detected_version"] = version_string
+                version_info["gimp_module_type"] = str(type(Gimp))
+                
+                gimp_info["version"] = version_info
+                
+            except Exception as version_error:
+                print(f"Error getting version info: {version_error}")
+                gimp_info["version"] = {"error": str(version_error)}
+            
+            # Installation and directory information
+            try:
+                directories = {}
+                
+                # Safely try each directory method
+                directory_methods = [
+                    ('user_directory', 'directory'),
+                    ('system_data_directory', 'data_directory'), 
+                    ('locale_directory', 'locale_directory'),
+                    ('plugin_directory', 'plug_in_directory'),
+                    ('sysconf_directory', 'sysconf_directory')
+                ]
+                
+                for dir_name, method_name in directory_methods:
+                    try:
+                        if hasattr(Gimp, method_name):
+                            method = getattr(Gimp, method_name)
+                            if callable(method):
+                                directories[dir_name] = str(method())
+                            else:
+                                directories[dir_name] = str(method)
+                        else:
+                            directories[f"{dir_name}_not_available"] = True
+                    except Exception as method_error:
+                        directories[f"{dir_name}_error"] = str(method_error)
+                
+                # List available directory-related methods
+                dir_attrs = [attr for attr in dir(Gimp) if 'dir' in attr.lower()]
+                directories["available_directory_methods"] = dir_attrs
+                
+                gimp_info["directories"] = directories
+                
+            except Exception as dir_error:
+                print(f"Error getting directory info: {dir_error}")
+                gimp_info["directories"] = {"error": str(dir_error)}
+            
+            # Current session information
+            try:
+                images = Gimp.get_images()
+                gimp_info["session"] = {
+                    "num_open_images": len(images),
+                    "has_open_images": len(images) > 0,
+                    "open_image_files": []
+                }
+                
+                # Get file information for open images
+                for i, image in enumerate(images):
+                    try:
+                        image_file = image.get_file()
+                        file_info = {
+                            "index": i,
+                            "width": image.get_width(),
+                            "height": image.get_height(),
+                            "base_type": self._base_type_to_string(image.get_base_type()),
+                            "is_dirty": image.is_dirty() if hasattr(image, 'is_dirty') else None
+                        }
+                        
+                        if image_file:
+                            file_info.update({
+                                "path": image_file.get_path() if hasattr(image_file, 'get_path') else None,
+                                "basename": image_file.get_basename() if hasattr(image_file, 'get_basename') else None
+                            })
+                        else:
+                            file_info["path"] = "Untitled"
+                            
+                        gimp_info["session"]["open_image_files"].append(file_info)
+                    except Exception as image_error:
+                        print(f"Error getting image {i} info: {image_error}")
+                        gimp_info["session"]["open_image_files"].append({
+                            "index": i,
+                            "error": str(image_error)
+                        })
+                        
+            except Exception as session_error:
+                print(f"Error getting session info: {session_error}")
+                gimp_info["session"] = {"error": str(session_error)}
+            
+            # PDB (Procedure Database) information
+            try:
+                pdb = Gimp.get_pdb()
+                pdb_info = {
+                    "available": pdb is not None,
+                    "type": str(type(pdb)) if pdb else None
+                }
+                
+                # Try to get some example procedures
+                if pdb:
+                    sample_procedures = []
+                    try:
+                        # Test some common procedures
+                        test_procs = ['file-png-export', 'gimp-file-save', 'gimp-image-new', 'python-fu-console']
+                        for proc_name in test_procs:
+                            try:
+                                proc = pdb.lookup_procedure(proc_name)
+                                sample_procedures.append({
+                                    "name": proc_name,
+                                    "available": proc is not None,
+                                    "type": str(type(proc)) if proc else None
+                                })
+                            except:
+                                sample_procedures.append({
+                                    "name": proc_name,
+                                    "available": False,
+                                    "error": "lookup_failed"
+                                })
+                    except Exception as proc_error:
+                        print(f"Error testing procedures: {proc_error}")
+                    
+                    pdb_info["sample_procedures"] = sample_procedures
+                
+                gimp_info["pdb"] = pdb_info
+                
+            except Exception as pdb_error:
+                print(f"Error getting PDB info: {pdb_error}")
+                gimp_info["pdb"] = {"error": str(pdb_error)}
+            
+            # Context and environment information
+            try:
+                context_info = {}
+                
+                # Try to get current context information
+                try:
+                    fg_color = Gimp.context_get_foreground()
+                    context_info["foreground_color"] = str(fg_color) if fg_color else None
+                except:
+                    context_info["foreground_color"] = "unavailable"
+                
+                try:
+                    bg_color = Gimp.context_get_background()
+                    context_info["background_color"] = str(bg_color) if bg_color else None
+                except:
+                    context_info["background_color"] = "unavailable"
+                
+                try:
+                    brush_size = Gimp.context_get_brush_size()
+                    context_info["brush_size"] = brush_size if brush_size else None
+                except:
+                    context_info["brush_size"] = "unavailable"
+                
+                gimp_info["context"] = context_info
+                
+            except Exception as context_error:
+                print(f"Error getting context info: {context_error}")
+                gimp_info["context"] = {"error": str(context_error)}
+            
+            # Capabilities and features
+            try:
+                capabilities = {
+                    "has_python_console": True,  # We're running Python
+                    "mcp_server_running": True,  # We're responding to MCP requests
+                    "supports_image_export": True,  # We have the bitmap export function
+                    "supports_metadata_export": True,  # We have the metadata function
+                    "supports_gimp_info": True,  # We have the gimp info function
+                    "api_version": "3.0+",
+                    "python_version": sys.version,
+                    "available_modules": [],
+                    "gimp_module_attributes": len(dir(Gimp)),
+                    "gimp_methods": [attr for attr in dir(Gimp) if callable(getattr(Gimp, attr, None))][:20]  # First 20 methods
+                }
+                
+                # Test for available Python modules
+                test_modules = ['gi.repository.Gimp', 'gi.repository.Gegl', 'gi.repository.Gio', 'json', 'base64', 'tempfile']
+                for module_name in test_modules:
+                    try:
+                        if module_name == 'gi.repository.Gimp':
+                            # Already imported
+                            capabilities["available_modules"].append({"name": module_name, "available": True})
+                        elif module_name == 'gi.repository.Gegl':
+                            from gi.repository import Gegl
+                            capabilities["available_modules"].append({"name": module_name, "available": True})
+                        elif module_name == 'gi.repository.Gio':
+                            from gi.repository import Gio
+                            capabilities["available_modules"].append({"name": module_name, "available": True})
+                        else:
+                            __import__(module_name)
+                            capabilities["available_modules"].append({"name": module_name, "available": True})
+                    except ImportError:
+                        capabilities["available_modules"].append({"name": module_name, "available": False})
+                    except Exception as mod_error:
+                        capabilities["available_modules"].append({"name": module_name, "available": False, "error": str(mod_error)})
+                
+                gimp_info["capabilities"] = capabilities
+                
+            except Exception as cap_error:
+                print(f"Error getting capabilities: {cap_error}")
+                gimp_info["capabilities"] = {"error": str(cap_error)}
+            
+            # System and platform information
+            try:
+                
+                system_info = {
+                    "platform": platform.platform(),
+                    "system": platform.system(),
+                    "machine": platform.machine(),
+                    "python_version": platform.python_version(),
+                    "environment_vars": {
+                        "HOME": os.environ.get("HOME"),
+                        "USER": os.environ.get("USER"), 
+                        "GIMP_PLUG_IN_DIR": os.environ.get("GIMP_PLUG_IN_DIR"),
+                        "GIMP_DATA_DIR": os.environ.get("GIMP_DATA_DIR")
+                    }
+                }
+                
+                gimp_info["system"] = system_info
+                
+            except Exception as sys_error:
+                print(f"Error getting system info: {sys_error}")
+                gimp_info["system"] = {"error": str(sys_error)}
+            
+            return {
+                "status": "success",
+                "results": gimp_info
+            }
+            
+        except Exception as e:
+            error_msg = f"Error getting GIMP info: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
 
 Gimp.main(MCPPlugin.__gtype__, sys.argv)
