@@ -13,6 +13,20 @@ Returns the current open image as an MCP-compliant Image object in PNG format.
 - **Format**: PNG
 - **MCP Compliant**: Yes - returns proper ImageContent structure
 
+#### `get_image_metadata()` 
+Returns comprehensive metadata about the current open image without transferring bitmap data.
+- **Returns**: Dictionary containing detailed image information
+- **Performance**: Much faster than `get_image_bitmap()` - no image export required
+- **Use case**: Perfect for analysis, decision making, and information gathering
+
+**Returned metadata includes:**
+- **Basic properties**: width, height, color mode, precision, resolution, unsaved changes status
+- **Structure information**: number of layers/channels/paths with detailed properties
+- **Layer details**: name, visibility, opacity, blend mode, dimensions, alpha channel
+- **Channel information**: name, visibility, opacity, color
+- **Path/vector data**: name, visibility, stroke count
+- **File information**: path, URI, basename (if image was saved)
+
 ### 2. General API Tool
 
 #### `call_api(api_path, args=[], kwargs={})`
@@ -26,8 +40,8 @@ Execute GIMP 3.0 API methods through PyGObject console.
 - Commands execute in persistent context - imports and variables persist
 - Always call Gimp.displays_flush() after drawing operations
 
-For image operations, use `get_image_bitmap()`
-which return proper MCP Image objects that Claude can process directly.
+For image operations, use `get_image_bitmap()` for full image export or `get_image_metadata()` for fast information gathering.
+Both return MCP-compliant data that AI assistants can process directly.
 
 ## Basic Method
 
@@ -250,6 +264,58 @@ The GIMP MCP server now provides dedicated tools for image export that return MC
 # This returns an Image object that Claude can directly process
 image = get_image_bitmap()
 ```
+
+#### Using `get_image_metadata()`
+```python
+# Fast metadata retrieval without bitmap transfer
+metadata = get_image_metadata()
+
+# Example response structure:
+{
+  "basic": {
+    "width": 1920,
+    "height": 1080,
+    "base_type": "RGB",
+    "precision": "8-bit integer",
+    "resolution_x": 72.0,
+    "resolution_y": 72.0,
+    "is_dirty": true
+  },
+  "structure": {
+    "num_layers": 3,
+    "num_channels": 0,
+    "num_paths": 1,
+    "layers": [
+      {
+        "name": "Background",
+        "visible": true,
+        "opacity": 100.0,
+        "width": 1920,
+        "height": 1080,
+        "has_alpha": false,
+        "blend_mode": "NORMAL",
+        "layer_type": "RGB_IMAGE"
+      }
+    ],
+    "channels": [],
+    "paths": [
+      {
+        "name": "Path 1",
+        "visible": true,
+        "num_strokes": 2
+      }
+    ]
+  },
+  "file": {
+    "path": "/home/user/image.xcf",
+    "basename": "image.xcf"
+  }
+}
+```
+
+#### When to Use Each Tool
+- **`get_image_bitmap()`**: When you need to visually analyze or process the actual image
+- **`get_image_metadata()`**: When you need image properties for decision making, validation, or information display
 
 ## Plugin Architecture
 

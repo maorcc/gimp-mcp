@@ -172,6 +172,8 @@ class MCPPlugin(Gimp.PlugIn):
             j = json.loads(request)
             if "type" in j and j["type"] == "get_image_bitmap":
                 return self._get_current_image_bitmap()
+            elif "type" in j and j["type"] == "get_image_metadata":
+                return self._get_current_image_metadata()
             elif "cmds" in j:
                 a = ['python-fu-exec', j["cmds"]]
             else:
@@ -357,5 +359,200 @@ class MCPPlugin(Gimp.PlugIn):
                 "error": str(e),
                 "traceback": traceback.format_exc()
             }
+
+    def _get_current_image_metadata(self):
+        """Get comprehensive metadata about the current image without bitmap data."""
+        try:
+            print("Getting current image metadata...")
+            
+            # Get the current images
+            images = Gimp.get_images()
+            if not images:
+                return {
+                    "status": "error",
+                    "error": "No images are currently open in GIMP"
+                }
+            
+            # Use the first image (most recently active)
+            image = images[0]
+            
+            # Basic image properties
+            width = image.get_width()
+            height = image.get_height()
+            
+            # Get image type and base type
+            base_type = image.get_base_type()
+            base_type_str = self._base_type_to_string(base_type)
+            
+            # Get precision and color profile info
+            precision = image.get_precision()
+            precision_str = self._precision_to_string(precision)
+            
+            # Get layers information
+            layers = image.get_layers()
+            layers_info = []
+            for i, layer in enumerate(layers):
+                try:
+                    layer_info = {
+                        "name": layer.get_name(),
+                        "visible": layer.get_visible(),
+                        "opacity": layer.get_opacity(),
+                        "width": layer.get_width(),
+                        "height": layer.get_height(),
+                        "has_alpha": layer.has_alpha(),
+                        "is_group": hasattr(layer, 'get_children') and callable(getattr(layer, 'get_children')),
+                        "layer_type": str(layer.get_image_type()) if hasattr(layer, 'get_image_type') else "unknown"
+                    }
+                    # Try to get layer mode if available
+                    try:
+                        layer_info["blend_mode"] = str(layer.get_mode())
+                    except:
+                        layer_info["blend_mode"] = "unknown"
+                    
+                    layers_info.append(layer_info)
+                except Exception as layer_error:
+                    print(f"Error getting layer {i} info: {layer_error}")
+                    layers_info.append({
+                        "name": f"Layer {i}",
+                        "error": str(layer_error)
+                    })
+            
+            # Get channels information
+            channels = image.get_channels()
+            channels_info = []
+            for i, channel in enumerate(channels):
+                try:
+                    channel_info = {
+                        "name": channel.get_name(),
+                        "visible": channel.get_visible(),
+                        "opacity": channel.get_opacity(),
+                        "color": str(channel.get_color()) if hasattr(channel, 'get_color') else "unknown"
+                    }
+                    channels_info.append(channel_info)
+                except Exception as channel_error:
+                    print(f"Error getting channel {i} info: {channel_error}")
+                    channels_info.append({
+                        "name": f"Channel {i}",
+                        "error": str(channel_error)
+                    })
+            
+            # Get paths/vectors information
+            paths = []
+            try:
+                image_paths = image.get_paths()
+                for i, path in enumerate(image_paths):
+                    try:
+                        path_info = {
+                            "name": path.get_name(),
+                            "visible": path.get_visible(),
+                            "num_strokes": len(path.get_strokes()) if hasattr(path, 'get_strokes') else 0
+                        }
+                        paths.append(path_info)
+                    except Exception as path_error:
+                        print(f"Error getting path {i} info: {path_error}")
+                        paths.append({
+                            "name": f"Path {i}",
+                            "error": str(path_error)
+                        })
+            except Exception as paths_error:
+                print(f"Error getting paths: {paths_error}")
+            
+            # Get file information if available
+            file_info = {}
+            try:
+                image_file = image.get_file()
+                if image_file:
+                    file_info = {
+                        "path": image_file.get_path() if hasattr(image_file, 'get_path') else None,
+                        "uri": image_file.get_uri() if hasattr(image_file, 'get_uri') else None,
+                        "basename": image_file.get_basename() if hasattr(image_file, 'get_basename') else None
+                    }
+            except Exception as file_error:
+                print(f"Error getting file info: {file_error}")
+                file_info = {"error": str(file_error)}
+            
+            # Get resolution information
+            resolution_x = resolution_y = None
+            try:
+                resolution_x, resolution_y = image.get_resolution()
+            except Exception as res_error:
+                print(f"Error getting resolution: {res_error}")
+            
+            # Check if image has unsaved changes
+            is_dirty = False
+            try:
+                is_dirty = image.is_dirty()
+            except Exception as dirty_error:
+                print(f"Error getting dirty status: {dirty_error}")
+            
+            metadata = {
+                "basic": {
+                    "width": width,
+                    "height": height,
+                    "base_type": base_type_str,
+                    "precision": precision_str,
+                    "resolution_x": resolution_x,
+                    "resolution_y": resolution_y,
+                    "is_dirty": is_dirty
+                },
+                "structure": {
+                    "num_layers": len(layers),
+                    "num_channels": len(channels),
+                    "num_paths": len(paths),
+                    "layers": layers_info,
+                    "channels": channels_info,
+                    "paths": paths
+                },
+                "file": file_info
+            }
+            
+            return {
+                "status": "success",
+                "results": metadata
+            }
+            
+        except Exception as e:
+            error_msg = f"Error getting image metadata: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+
+    def _base_type_to_string(self, base_type):
+        """Convert GIMP base type enum to string."""
+        try:
+            base_type_map = {
+                Gimp.ImageBaseType.RGB: "RGB",
+                Gimp.ImageBaseType.GRAY: "Grayscale",
+                Gimp.ImageBaseType.INDEXED: "Indexed"
+            }
+            return base_type_map.get(base_type, f"Unknown ({base_type})")
+        except:
+            return str(base_type)
+
+    def _precision_to_string(self, precision):
+        """Convert GIMP precision enum to string."""
+        try:
+            # Common GIMP 3.0 precision types
+            precision_map = {
+                100: "8-bit integer",
+                150: "16-bit integer", 
+                200: "32-bit integer",
+                250: "16-bit float",
+                300: "32-bit float",
+                350: "64-bit float"
+            }
+            
+            # Try to get the actual enum value if it has a name
+            if hasattr(precision, 'value_name'):
+                return precision.value_name
+            elif hasattr(precision, 'value_nick'):
+                return precision.value_nick
+            else:
+                return precision_map.get(int(precision), f"Unknown precision ({precision})")
+        except:
+            return str(precision)
 
 Gimp.main(MCPPlugin.__gtype__, sys.argv)
