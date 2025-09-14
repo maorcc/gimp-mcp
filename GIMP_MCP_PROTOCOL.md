@@ -27,6 +27,21 @@ Returns comprehensive metadata about the current open image without transferring
 - **Path/vector data**: name, visibility, stroke count
 - **File information**: path, URI, basename (if image was saved)
 
+#### `get_gimp_info()` 
+Returns comprehensive information about the GIMP installation and runtime environment.
+- **Returns**: Dictionary containing detailed GIMP environment information
+- **Performance**: Fast - gathers system information without heavy operations
+- **Use case**: Environment discovery, troubleshooting, capability detection, optimal support
+
+**Returned information includes:**
+- **Version details**: GIMP version string, major/minor/micro versions
+- **Directory paths**: user directory, system data, plugins, locale, sysconf directories
+- **Session information**: number of open images, file paths, basic image properties
+- **PDB capabilities**: Procedure Database availability, sample procedure tests
+- **Current context**: foreground/background colors, brush settings
+- **System capabilities**: Python modules, MCP features, API version
+- **Platform information**: OS details, environment variables, Python version
+
 ### 2. General API Tool
 
 #### `call_api(api_path, args=[], kwargs={})`
@@ -40,8 +55,8 @@ Execute GIMP 3.0 API methods through PyGObject console.
 - Commands execute in persistent context - imports and variables persist
 - Always call Gimp.displays_flush() after drawing operations
 
-For image operations, use `get_image_bitmap()` for full image export or `get_image_metadata()` for fast information gathering.
-Both return MCP-compliant data that AI assistants can process directly.
+For image operations, use `get_image_bitmap()` for full image export, `get_image_metadata()` for fast information gathering, or `get_gimp_info()` for environment discovery.
+All tools return MCP-compliant data that AI assistants can process directly.
 
 ## Basic Method
 
@@ -313,9 +328,80 @@ metadata = get_image_metadata()
 }
 ```
 
+#### Using `get_gimp_info()`
+```python
+# Get comprehensive GIMP environment information
+gimp_info = get_gimp_info()
+
+# Example response structure:
+{
+  "version": {
+    "version_method": "3.1.4",
+    "detected_version": "3.1.4",
+    "available_version_attributes": ["version"],
+    "gimp_module_type": "<class 'gi.module.Gimp'>"
+  },
+  "directories": {
+    "user_directory": "/home/user/.config/GIMP/3.1",
+    "system_data_directory": "/usr/share/gimp/3.1", 
+    "plugin_directory": "/usr/lib/gimp/3.1/plug-ins",
+    "available_directory_methods": ["directory", "data_directory", "plug_in_directory"]
+  },
+  "session": {
+    "num_open_images": 2,
+    "has_open_images": true,
+    "open_image_files": [
+      {
+        "index": 0,
+        "width": 1920,
+        "height": 1080,
+        "base_type": "RGB",
+        "path": "/home/user/photo.jpg",
+        "is_dirty": false
+      }
+    ]
+  },
+  "pdb": {
+    "available": true,
+    "sample_procedures": [
+      {"name": "file-png-export", "available": true},
+      {"name": "gimp-image-new", "available": true}
+    ]
+  },
+  "context": {
+    "foreground_color": "rgba(0,0,0,1)",
+    "background_color": "rgba(255,255,255,1)",
+    "brush_size": 20.0
+  },
+  "capabilities": {
+    "has_python_console": true,
+    "mcp_server_running": true,
+    "supports_image_export": true,
+    "supports_metadata_export": true,
+    "supports_gimp_info": true,
+    "api_version": "3.0+",
+    "gimp_module_attributes": 127,
+    "gimp_methods": ["Brush", "Channel", "Context", "Display", "Drawable"],
+    "available_modules": [
+      {"name": "gi.repository.Gimp", "available": true},
+      {"name": "gi.repository.Gegl", "available": true}
+    ]
+  },
+  "system": {
+    "platform": "Linux-6.2.0-generic-x86_64",
+    "python_version": "3.11.4",
+    "environment_vars": {
+      "HOME": "/home/user",
+      "USER": "user"
+    }
+  }
+}
+```
+
 #### When to Use Each Tool
 - **`get_image_bitmap()`**: When you need to visually analyze or process the actual image
 - **`get_image_metadata()`**: When you need image properties for decision making, validation, or information display
+- **`get_gimp_info()`**: When you need environment information for troubleshooting, capability detection, or optimal support
 
 ## Plugin Architecture
 

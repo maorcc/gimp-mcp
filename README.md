@@ -165,6 +165,18 @@ uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
 ```
 *Uses `get_image_metadata()` to analyze image structure for intelligent decision making*
 
+#### Environment Discovery
+```
+"What version of GIMP am I working with and what features are available?"
+```
+*Uses `get_gimp_info()` to provide comprehensive environment information for optimal support*
+
+#### Troubleshooting Support
+```
+"I'm having issues with plugin exports - check my GIMP setup and suggest solutions"
+```
+*Uses `get_gimp_info()` to diagnose installation and configuration problems*
+
 #### Complex Workflows
 ```
 "Create a new 800x600 image, draw a blue circle in the center, add a red border, then show me the result"
@@ -178,6 +190,9 @@ The GIMP MCP server provides several tools that AI assistants can use:
 ### 🖼️ Image Export Tools
 - **`get_image_bitmap()`**: Get current image as MCP-compliant Image object (PNG format)
 - **`get_image_metadata()`**: Get comprehensive image metadata without bitmap data (fast)
+
+### 🔍 System Information Tool
+- **`get_gimp_info()`**: Get comprehensive GIMP installation and environment information
 
 ### 🔧 API Access Tool  
 - **`call_api(api_path, args, kwargs)`**: Execute any GIMP 3.0 PyGObject command
