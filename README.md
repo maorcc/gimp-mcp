@@ -188,7 +188,51 @@ uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
 The GIMP MCP server provides several tools that AI assistants can use:
 
 ### 🖼️ Image Export Tools
-- **`get_image_bitmap()`**: Get current image as MCP-compliant Image object (PNG format)
+- **`get_image_bitmap()`**
+
+Returns the current image as a base64-encoded PNG bitmap with support for region extraction and scaling.
+
+**Parameters:**
+- `max_width` (optional): Maximum width for full image scaling
+- `max_height` (optional): Maximum height for full image scaling  
+- `region` (optional): Dictionary for region extraction with keys:
+  - `origin_x`: X coordinate of region top-left corner
+  - `origin_y`: Y coordinate of region top-left corner  
+  - `width`: Width of region to extract
+  - `height`: Height of region to extract
+  - `max_width`: Maximum width for region scaling (optional)
+  - `max_height`: Maximum height for region scaling (optional)
+
+**Usage Examples:**
+
+```python
+# Get full image bitmap
+result = await client.get_image_bitmap()
+
+# Get full image scaled to max 800x600 (preserves aspect ratio)
+result = await client.get_image_bitmap(max_width=800, max_height=600)
+
+# Extract a region (100,100) with size 400x300
+result = await client.get_image_bitmap(
+    region={"origin_x": 100, "origin_y": 100, "width": 400, "height": 300}
+)
+
+# Extract region and scale it to 200x150 (preserves aspect ratio)
+result = await client.get_image_bitmap(
+    region={
+        "origin_x": 100, "origin_y": 100, "width": 400, "height": 300,
+        "max_width": 200, "max_height": 150
+    }
+)
+
+if result['status'] == 'success':
+    image_data = result['results']['image_data']  # base64-encoded PNG
+    width = result['results']['width']
+    height = result['results']['height']
+    original_width = result['results']['original_width']
+    original_height = result['results']['original_height']
+    processing = result['results']['processing_applied']
+
 - **`get_image_metadata()`**: Get comprehensive image metadata without bitmap data (fast)
 
 ### 🔍 System Information Tool

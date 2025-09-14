@@ -278,6 +278,51 @@ The GIMP MCP server now provides dedicated tools for image export that return MC
 ```python
 # This returns an Image object that Claude can directly process
 image = get_image_bitmap()
+
+**Purpose:** Get the current image as a base64-encoded PNG bitmap with support for region extraction and scaling
+
+**Parameters:**
+- `max_width` (integer, optional): Maximum width for full image scaling (center inside)
+- `max_height` (integer, optional): Maximum height for full image scaling (center inside)
+- `origin_x` (integer, optional): X coordinate for region extraction (requires all region params)
+- `origin_y` (integer, optional): Y coordinate for region extraction (requires all region params)
+- `width` (integer, optional): Width of region to extract (requires all region params)
+- `height` (integer, optional): Height of region to extract (requires all region params)
+- `scaled_to_width` (integer, optional): Target width for scaling extracted region
+- `scaled_to_height` (integer, optional): Target height for scaling extracted region
+
+**Usage Modes:**
+1. **Full Image:** No parameters - returns full image
+2. **Full Image Scaled:** `max_width` + `max_height` - scales full image to fit within bounds
+3. **Region Extract:** `origin_x` + `origin_y` + `width` + `height` - extracts specific region
+4. **Region Extract + Scale:** Region params + `scaled_to_width` + `scaled_to_height` - extracts and scales
+
+**Scaling Behavior:** All scaling uses "center inside" logic, preserving aspect ratio without cropping or distortion.
+
+**Response Format:**
+```json
+{
+  "status": "success",
+  "results": {
+    "image_data": "<base64-encoded-png-data>",
+    "format": "png", 
+    "width": 800,
+    "height": 600,
+    "original_width": 1920,
+    "original_height": 1080,
+    "encoding": "base64",
+    "processing_applied": {
+      "region_extracted": true,
+      "scaled": true,
+      "region_coords": {
+        "x": 100,
+        "y": 100,
+        "w": 400,
+        "h": 300
+      }
+    }
+  }
+}
 ```
 
 #### Using `get_image_metadata()`
