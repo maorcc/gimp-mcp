@@ -45,7 +45,7 @@ uv sync
 
 Copy the `gimp-mcp-plugin.py` to your GIMP `plug-ins` directory and make it executable.
 
-**Quick Install (Linux/macOS):**
+**Quick Install (Linux):**
 ```bash
 # For standard GIMP installation
 mkdir -p ~/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin
@@ -56,6 +56,13 @@ chmod +x ~/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
 mkdir -p ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin
 cp gimp-mcp-plugin.py ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/
 chmod +x ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
+```
+
+**Quick Install (macOS):**
+```bash
+mkdir -p ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin
+cp gimp-mcp-plugin.py ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin/
+chmod +x ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
 ```
 
 **Manual Installation:**
