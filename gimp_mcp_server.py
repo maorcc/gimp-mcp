@@ -271,6 +271,10 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     For image operations, use get_image_bitmap()
     which return proper MCP Image objects that Claude can process directly.
 
+    GUIDANCE PROMPTS:
+    - For common operations and best practices, invoke the 'gimp_best_practices' prompt
+    - For complex multi-element drawings with layers, invoke the 'gimp_iterative_workflow' prompt
+
     Optional Initialization Pattern:
     ["images = Gimp.get_images()", "image1 = images[0]",
      "layers = image1.get_layers()", "layer1 = layers[0]", "drawable1 = layer1"]

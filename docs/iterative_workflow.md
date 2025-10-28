@@ -80,7 +80,11 @@ call_api("exec", ["pyGObject-console", [
 
 # Step 2: VALIDATE (critical!)
 bitmap = get_image_bitmap(max_width=1024, max_height=1024)
-# Actually look at bitmap - does the body look right?
+# STOP and analyze the bitmap image you just received:
+# 1. Describe what you see in the image
+# 2. Compare to what you intended to draw
+# 3. Identify specific problems (blurry edges? wrong colors? missing elements?)
+# 4. Decide: continue or fix?
 
 # Step 3: Fix issues if any (on correct layer!)
 if issues_found:
@@ -99,6 +103,7 @@ call_api("exec", ["pyGObject-console", [
 
 # Step 5: VALIDATE again
 bitmap = get_image_bitmap(max_width=1024, max_height=1024)
+# STOP and analyze: Does the head look correct? Any issues to fix?
 ```
 
 ---
