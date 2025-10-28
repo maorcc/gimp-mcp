@@ -242,8 +242,11 @@ if result['status'] == 'success':
 
 - **`get_image_metadata()`**: Get comprehensive image metadata without bitmap data (fast)
 
-### 🔍 System Information Tool
+### 🔍 System Information Tools
 - **`get_gimp_info()`**: Get comprehensive GIMP installation and environment information
+- **`get_context_state()`**: Get current GIMP context state (colors, brush, feathering, opacity)
+
+Returns current GIMP context state including foreground/background colors, brush, opacity, paint mode, feather settings, and antialiasing state.
 
 ### 🔧 API Access Tool  
 - **`call_api(api_path, args, kwargs)`**: Execute any GIMP 3.0 PyGObject command

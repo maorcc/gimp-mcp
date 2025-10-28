@@ -111,7 +111,8 @@ Gimp.displays_flush()
 ## File Structure
 
 - `gimp-mcp-plugin.py`: GIMP plugin with socket server and command execution
-- `gimp-mcp-server.py`: MCP server that bridges socket to MCP protocol  
+- `gimp_mcp_server.py`: MCP server that bridges socket to MCP protocol
+- `docs/best_practices.md`: Best practices, common recipes, self-critique checklist, and guidelines exposed via MCP prompts
+- `docs/iterative_workflow.md`: Professional iterative workflow guidance for building complex images with layer management and validation
 - `GIMP_MCP_PROTOCOL.md`: Detailed API documentation and examples
-- `RECIPES.md`: Quick reference for common GIMP operations
 - `README.md`: Installation and setup instructions

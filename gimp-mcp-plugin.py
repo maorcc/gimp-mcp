@@ -22,6 +22,7 @@ import base64
 import tempfile
 import os
 import platform
+import signal
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
@@ -70,6 +71,16 @@ class MCPPlugin(Gimp.PlugIn):
         procedure.add_menu_path('<Image>/Tools/')
         return procedure
 
+    def shutdown_server(self, signum=None, frame=None):
+        """Gracefully shutdown the server."""
+        print(f"Shutdown signal received (signal: {signum}), closing MCP server...")
+        self.running = False
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+
     def run(self, procedure, run_mode, image, drawables, config, run_data):
         """Run the plugin and start the server."""
         if self.running:
@@ -78,18 +89,30 @@ class MCPPlugin(Gimp.PlugIn):
 
         self.running = True
 
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self.shutdown_server)
+        signal.signal(signal.SIGINT, self.shutdown_server)
+
         try:
             print("Creating socket...")
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.settimeout(1.0)  # Timeout to allow checking self.running periodically
             self.socket.bind((self.host, self.port))
             self.socket.listen(1)
 
             print(f"GimpMCP server started on {self.host}:{self.port}")
 
             while self.running:
-                client, address = self.socket.accept()
-                print(f"Connected to client: {address}")
+                try:
+                    client, address = self.socket.accept()
+                    print(f"Connected to client: {address}")
+                except socket.timeout:
+                    # Timeout allows us to check self.running flag
+                    continue
+                except OSError:
+                    # Socket was closed (likely during shutdown)
+                    break
 
                 # Handle client in a separate thread
                 client_thread = threading.Thread(
@@ -98,6 +121,16 @@ class MCPPlugin(Gimp.PlugIn):
                 )
                 client_thread.daemon = True
                 client_thread.start()
+
+            # Clean shutdown
+            print("MCP server shutting down...")
+            if self.socket:
+                try:
+                    self.socket.close()
+                except:
+                    pass
+                self.socket = None
+            print("MCP server stopped")
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
         except Exception as e:
@@ -105,7 +138,10 @@ class MCPPlugin(Gimp.PlugIn):
             self.running = False
 
             if self.socket:
-                self.socket.close()
+                try:
+                    self.socket.close()
+                except:
+                    pass
                 self.socket = None
 
             if self.server_thread:
@@ -191,11 +227,21 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._get_current_image_metadata()
             elif "type" in j and j["type"] == "get_gimp_info":
                 return self._get_gimp_info()
+            elif "type" in j and j["type"] == "get_context_state":
+                return self._get_context_state()
             elif "cmds" in j:
                 a = ['python-fu-exec', j["cmds"]]
             else:
                 p = j["params"]
                 a = p['args']
+
+            # Protect against empty args list
+            if len(a) == 0:
+                return {
+                    "status": "error",
+                    "error": "No command arguments provided"
+                }
+
             if a[0] == 'python-fu-eval':
                 if len(a) > 0:
                     print(f"evaluating exprs: {a[1]}")
@@ -1050,6 +1096,112 @@ class MCPPlugin(Gimp.PlugIn):
             
         except Exception as e:
             error_msg = f"Error getting GIMP info: {str(e)}\n{traceback.format_exc()}"
+            return {
+                "status": "error",
+                "error": error_msg,
+                "traceback": traceback.format_exc()
+            }
+
+    def _get_context_state(self):
+        """Get current GIMP context state (colors, brush, tool settings)."""
+        try:
+            print("Getting GIMP context state...")
+
+            context_state = {}
+
+            # Get foreground and background colors
+            try:
+                fg_color = Gimp.context_get_foreground()
+                bg_color = Gimp.context_get_background()
+
+                # Convert colors to RGB values
+                context_state["foreground_color"] = {
+                    "color_object": str(fg_color),
+                    "description": "Current foreground color"
+                }
+                context_state["background_color"] = {
+                    "color_object": str(bg_color),
+                    "description": "Current background color"
+                }
+
+                # Try to get RGB values if possible
+                try:
+                    if hasattr(fg_color, 'get_rgba'):
+                        rgba = fg_color.get_rgba()
+                        context_state["foreground_color"]["rgba"] = list(rgba) if rgba else None
+                except Exception as color_error:
+                    context_state["foreground_color"]["rgba_error"] = str(color_error)
+
+                try:
+                    if hasattr(bg_color, 'get_rgba'):
+                        rgba = bg_color.get_rgba()
+                        context_state["background_color"]["rgba"] = list(rgba) if rgba else None
+                except Exception as color_error:
+                    context_state["background_color"]["rgba_error"] = str(color_error)
+
+            except Exception as color_err:
+                context_state["colors_error"] = str(color_err)
+
+            # Get brush information
+            try:
+                brush = Gimp.context_get_brush()
+                if brush:
+                    context_state["brush"] = {
+                        "name": brush.get_name() if hasattr(brush, 'get_name') else str(brush),
+                        "description": "Current brush"
+                    }
+            except Exception as brush_err:
+                context_state["brush_error"] = str(brush_err)
+
+            # Get opacity
+            try:
+                opacity = Gimp.context_get_opacity()
+                context_state["opacity"] = {
+                    "value": opacity,  # Already in percentage (0-100)
+                    "description": "Current opacity percentage (0-100)"
+                }
+            except Exception as opacity_err:
+                context_state["opacity_error"] = str(opacity_err)
+
+            # Get paint mode
+            try:
+                paint_mode = Gimp.context_get_paint_mode()
+                context_state["paint_mode"] = {
+                    "value": str(paint_mode),
+                    "description": "Current paint/blend mode"
+                }
+            except Exception as mode_err:
+                context_state["paint_mode_error"] = str(mode_err)
+
+            # Get feather setting (if available)
+            try:
+                feather = Gimp.context_get_feather()
+                feather_radius = Gimp.context_get_feather_radius()
+                context_state["feather"] = {
+                    "enabled": feather,
+                    "radius": feather_radius,
+                    "description": "Selection feathering state"
+                }
+            except Exception as feather_err:
+                context_state["feather_note"] = "Feather settings not available in context"
+
+            # Get antialias setting
+            try:
+                antialias = Gimp.context_get_antialias()
+                context_state["antialias"] = {
+                    "enabled": antialias,
+                    "description": "Antialiasing state for selections"
+                }
+            except Exception as aa_err:
+                context_state["antialias_note"] = "Antialias setting not available"
+
+            return {
+                "status": "success",
+                "results": context_state
+            }
+
+        except Exception as e:
+            error_msg = f"Error getting context state: {str(e)}\n{traceback.format_exc()}"
             return {
                 "status": "error",
                 "error": error_msg,

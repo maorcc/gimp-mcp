@@ -3,3 +3,6 @@
 /__pycache__/
 .venv/
 *.pyc
+
+# macOS
+.DS_Store

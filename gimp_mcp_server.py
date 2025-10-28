@@ -8,6 +8,7 @@ import json
 import logging
 import base64
 import traceback
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
@@ -74,41 +75,52 @@ mcp = FastMCP("GimpMCP", description="GIMP integration through MCP")
 @mcp.tool()
 def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None) -> Image:
     """Get the current open image in GIMP as an Image object with optional scaling and region selection.
-    
-    RECOMMENDED USAGE:
-    - Use max_width=1024, max_height=1024 by default for optimal performance and manageable file sizes
-    - Call get_image_metadata() first to understand image dimensions before extraction
-    - Large images without scaling can result in very large data transfers
-    
+
+    PRIMARY USE: Verification tool for checking work mid-workflow, not just final delivery.
+
+    REGIONAL VERIFICATION (Recommended):
+    After drawing operations, capture a high-resolution region to verify output quality:
+    - Extract only the area you just modified (saves resources)
+    - Can use higher resolution for specific areas
+    - Faster feedback than full image extraction
+    - Example: After drawing a face, get just the face region at high quality
+
+    RESOURCE EFFICIENCY:
+    - Use max_width=1024, max_height=1024 by default for full image
+    - Use region extraction when changes are in specific area
+    - Higher resolution possible for small regions
+    - Call get_image_metadata() first to understand dimensions
+
     Supports two main use cases:
     1. Full image with optional scaling (pass max_width/max_height)
     2. Region extraction with optional scaling (pass region dict)
-    
+
     Parameters:
     - max_width, max_height: Target dimensions for scaling (center inside scaling)
       RECOMMENDED: Use 1024x1024 as default maximum for optimal performance
     - region: Dictionary with keys:
         - origin_x, origin_y: Top-left corner of region to extract
-        - width, height: Dimensions of region to extract  
+        - width, height: Dimensions of region to extract
         - max_width, max_height: Target dimensions for scaling extracted region (center inside scaling)
-    
+
     Best Practice Workflow:
-    1. Call get_image_metadata() to get original image dimensions
-    2. Determine appropriate scaling or region based on image size
-    3. Call get_image_bitmap() with recommended max_width=1024, max_height=1024
-    
+    1. After drawing operations, immediately verify output quality
+    2. Use regional extraction for targeted verification (faster, can be higher res)
+    3. Example: After painting a detail, check just that region at full quality
+    4. Use mid-workflow to catch issues early, not just for final export
+
     Examples:
-    - Recommended full image: get_image_bitmap(max_width=1024, max_height=1024)
-    - Region: get_image_bitmap(region={"origin_x": 100, "origin_y": 50, "width": 400, "height": 300})
-    - Scaled region: get_image_bitmap(region={"origin_x": 100, "origin_y": 50, "width": 400, "height": 300, "max_width": 512, "max_height": 512})
-    
+    - Full image: get_image_bitmap(max_width=1024, max_height=1024)
+    - Verify specific region: get_image_bitmap(region={"origin_x": 100, "origin_y": 50, "width": 400, "height": 300})
+    - High-res region check: get_image_bitmap(region={"origin_x": 100, "origin_y": 50, "width": 200, "height": 200})
+
     Returns:
     - Image object containing PNG data in MCP-compliant format
     - Includes width, height, and base64-encoded image data
-    
+
     The returned Image object automatically handles base64 encoding and MIME types
     according to the Model Context Protocol specification.
-    
+
     Raises:
     - RuntimeError if no image is open, region is invalid, or export fails
     """
@@ -179,7 +191,7 @@ def get_image_metadata(ctx: Context) -> dict:
 @mcp.tool()
 def get_gimp_info(ctx: Context) -> dict:
     """Get comprehensive information about the GIMP installation and environment.
-    
+
     Returns detailed information about GIMP that AI assistants need to understand
     the current environment, including:
     - GIMP version and build information
@@ -187,17 +199,17 @@ def get_gimp_info(ctx: Context) -> dict:
     - Available plugins and procedures
     - System configuration
     - Runtime environment details
-    
+
     This information helps AI assistants provide better support and troubleshooting
     by understanding the specific GIMP setup they're working with.
-    
+
     Returns:
     - Dictionary containing comprehensive GIMP environment information
     - Raises exception if GIMP connection fails
     """
     try:
         print("Requesting GIMP environment information...")
-        
+
         conn = get_gimp_connection()
         result = conn.send_command("get_gimp_info")
         if result["status"] == "success":
@@ -207,6 +219,42 @@ def get_gimp_info(ctx: Context) -> dict:
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Failed to get GIMP info: {e}")
+
+@mcp.tool()
+def get_context_state(ctx: Context) -> dict:
+    """Get the current GIMP context state (colors, brush, settings).
+
+    IMPORTANT: Context state can be changed by the user in GIMP UI at any time.
+    Check context state before operations that depend on specific settings.
+
+    Returns information about:
+    - Foreground and background colors (RGB/RGBA values)
+    - Current brush and its properties
+    - Opacity setting (0-100%)
+    - Paint/blend mode
+    - Feather state and radius
+    - Antialiasing state
+
+    Use cases:
+    - Verify colors before drawing operations
+    - Check if feathering is enabled (avoid unwanted blurry edges)
+    - Ensure correct opacity and blend mode
+    - Detect if user changed settings in GIMP UI
+
+    Returns:
+    - Dictionary containing current context state
+    - Raises exception if unable to get context state
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("get_context_state", params={})
+        if result["status"] == "success":
+            return result["results"]
+        else:
+            raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"Failed to get context state: {e}")
 
 
 @mcp.tool()
@@ -287,6 +335,34 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
             return f"Error: {json.dumps(result["error"])}"
     except Exception as e:
         return f"Error: {e}"
+
+@mcp.prompt(
+    description="GIMP MCP best practices for common operations - filling shapes, bezier paths, and variable persistence"
+)
+def gimp_best_practices() -> str:
+    """Returns guidance on best practices for GIMP operations via MCP.
+
+    This prompt provides critical DO/DON'T patterns that help AI assistants
+    and users avoid common mistakes when working with GIMP through MCP.
+    """
+    docs_path = Path(__file__).parent / "docs" / "best_practices.md"
+    return docs_path.read_text()
+
+@mcp.prompt(
+    description="Iterative workflow guidance for building complex images with proper validation and layer management"
+)
+def gimp_iterative_workflow() -> str:
+    """Returns comprehensive guidance on iterative workflow with GIMP MCP.
+
+    This prompt teaches AI assistants how to:
+    - Plan layer structures before drawing
+    - Work incrementally with continuous validation
+    - Self-critique using get_image_bitmap()
+    - Fix problems properly instead of painting over them
+    - Leverage GIMP's professional features for clean, organized work
+    """
+    docs_path = Path(__file__).parent / "docs" / "iterative_workflow.md"
+    return docs_path.read_text()
 
 def main():
     mcp.run()
