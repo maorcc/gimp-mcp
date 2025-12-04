@@ -138,6 +138,11 @@ server = MCPServerStdio(
 agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ```
 
+#### Claude Code
+```bash
+claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py 
+```
+
 #### Other MCP Clients
 For other MCP clients that support stdio transport, use the command:
 ```bash
