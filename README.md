@@ -139,8 +139,15 @@ agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ```
 
 #### Claude Code
+This repository includes a `.mcp.json` file for automatic MCP server discovery. Simply open the project directory in Claude Code and the GIMP MCP server will be available automatically:
 ```bash
-claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py 
+cd /path/to/gimp-mcp
+claude
+```
+
+Alternatively, you can add it manually:
+```bash
+claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
 ```
 
 #### Other MCP Clients
