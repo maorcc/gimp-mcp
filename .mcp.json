@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "gimp-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        ".",
+        "gimp_mcp_server.py"
+      ]
+    }
+  }
+}
