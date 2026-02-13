@@ -1,0 +1,8 @@
+bug:
+  - '(bug|broken|crash|error|fail|not working|doesn.t work)'
+enhancement:
+  - '(feature|enhancement|add support|would be nice|should support|please add)'
+question:
+  - '(how to|how do|is it possible|can I|does it|question|what is)'
+documentation:
+  - '(doc|documentation|readme|instructions|guide|tutorial|example)'
