@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+  path_filters:
+    - "!.venv/**"
+  path_instructions:
+    - path: "gimp-mcp-plugin.py"
+      instructions: >-
+        This is a GIMP 3.0 plugin that creates a socket server for remote
+        control. Review for socket security issues, command injection risks
+        in the exec-based command execution, and proper GIMP 3.0 API usage.
+    - path: "gimp_mcp_server.py"
+      instructions: >-
+        This is an MCP (Model Context Protocol) server bridging socket
+        communication to MCP clients. Review for proper error handling,
+        socket safety, and MCP protocol compliance.
+    - path: "tests/**"
+      instructions: >-
+        These are test files. Review for test coverage, assertion quality,
+        and proper test isolation.
+  tools:
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+    github-checks:
+      enabled: true
+      timeout_ms: 90000
+    shellcheck:
+      enabled: true
+chat:
+  auto_reply: true
