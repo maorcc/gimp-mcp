@@ -336,7 +336,7 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
         if result["status"] == "success":
             return json.dumps(result["results"])
         else:
-            return f"Error: {json.dumps(result["error"])}"
+            return f"Error: {json.dumps(result['error'])}"
     except Exception as e:
         return f"Error: {e}"
 

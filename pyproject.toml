@@ -16,3 +16,6 @@ dependencies = [
 
 [project.scripts]
 gimp-mcp-server = "gimp_mcp_server:main"
+
+[tool.ruff.lint]
+per-file-ignores = {"gimp-mcp-plugin.py" = ["E402"]}
