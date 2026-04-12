@@ -293,16 +293,25 @@ for iteration, (step_px, thresh, feather) in enumerate(SCHEDULES[:MAX_ITERS]):
     scan_code = SCAN_CODE_TEMPLATE.replace('{step}', str(step_px)) \
                                    .replace('{thresh}', str(thresh))
     r = exec_gimp(scan_code)
+    if r.get('status') != 'success':
+        print(f"ERROR: Scan transport failed: {r.get('error', '')}", file=sys.stderr)
+        sys.exit(1)
     out_lines = (r.get('results') or [''])[0]
 
     # Parse BGPTS from output
     bg_pts = []
+    saw_bgpts = False
     for line in out_lines.strip().splitlines():
         if line.startswith('BGPTS:'):
+            saw_bgpts = True
             try:
                 bg_pts = json.loads(line[6:])
             except Exception:
                 pass
+
+    if not saw_bgpts:
+        print(f"ERROR: Scan produced no BGPTS marker — GIMP output: {out_lines[:200]}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"    Found {len(bg_pts)} BG candidate pixels")
 
@@ -420,11 +429,15 @@ for zone_name, region in [
     raw_z = snapshot(label=zone_name, region=region, max_size=256)
     if raw_z: save_png(raw_z, f'{OUT}/iter_final_{zone_name}.png')
 
+final_out = f'{OUT}/result_clean_final.png'
 r = cmd('export_image', {
     'image_index': 0,
-    'file_path':   f'{OUT}/navi_clean_final.png',
+    'file_path':   final_out,
     'file_type':   'png',
 })
-print(f"\nExport: {r.get('status')} -> navi_clean_final.png")
+print(f"\nExport: {r.get('status')} -> {final_out}")
+if r.get('status') != 'success':
+    print(f"ERROR: Export failed: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 print("\n" + "=" * 60)
 print("Done. Check iter_final.png — should be character-only.")

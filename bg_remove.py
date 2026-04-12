@@ -132,8 +132,14 @@ except Exception as _e:
 
 print("Running background removal...")
 r = exec_cmds([bg_removal_code])
-output = r.get('results', [''])[0] if r.get('results') else r.get('error', '')
+if r.get('status') != 'success':
+    print(f"ERROR: Background removal transport failed: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
+output = (r.get('results') or [''])[0]
 print(f"GIMP output: {output}")
+if 'BG_REMOVAL_SUCCESS' not in output:
+    print(f"ERROR: Background removal failed: {output[:200]}", file=sys.stderr)
+    sys.exit(1)
 
 r = cmd('export_image', {'image_index': 0, 'file_path': args.output, 'file_type': 'png'})
 print(f"Export: {r.get('status')} -> {args.output}")

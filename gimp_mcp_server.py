@@ -203,15 +203,26 @@ def new_canvas(
             "args": ["pyGObject-console", cmds],
             "kwargs": {}
         })
+        if result["status"] != "success":
+            raise Exception(result.get("error", "Unknown error"))
+
+        output = result.get("results") or []
+        image_id = None
+        if output:
+            try:
+                image_id = int(str(output[-1]).strip())
+            except (ValueError, IndexError):
+                pass
+
         return {
             "status": "success",
+            "image_id": image_id,
             "width": width,
             "height": height,
             "color_mode": color_mode,
             "fill": fill,
             "resolution": resolution,
             "display_opened": True,
-            "raw": result
         }
     except Exception as e:
         traceback.print_exc()
@@ -445,7 +456,7 @@ def get_context_state(ctx: Context) -> dict:
 
 @mcp.tool()
 def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) -> str:
-    """Call GIMP 3.0 API methods through PyGObject console.
+    """Call GIMP 3.2 API methods through PyGObject console.
 
     GIMP MCP Protocol:
     - Use api_path="exec" to execute Python code in GIMP
@@ -501,10 +512,10 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     - After drawing operations, always call Gimp.displays_flush()
     - After selection operations for drawing, unselect with Gimp.Selection.none(image1)
 
-    GIMP 3.0 API Changes:
+    GIMP 3.2 API Changes:
     - Use Gimp.get_images() instead of deprecated Gimp.list_images()
     - Use image.get_layers() instead of Gimp.get_active_layer()
-    - gimpfu module not available in GIMP 3.0
+    - gimpfu module not available in GIMP 3.2
     - Colors created with Gegl.Color.new('color_name')
     - Full API documentation: https://developer.gimp.org/api/3.0/libgimp/
 
@@ -522,7 +533,7 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
         if result["status"] == "success":
             return json.dumps(result["results"])
         else:
-            return f"Error: {json.dumps(result["error"])}"
+            return f"Error: {json.dumps(result['error'])}"
     except Exception as e:
         return f"Error: {e}"
 

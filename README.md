@@ -10,7 +10,6 @@
 
 https://github.com/maorcc/gimp-mcp/raw/main/docs/demo.mp4
 
-<video src="docs/demo.mp4" controls width="100%"></video>
 
 *AI agent using GIMP MCP to remove a background, edit a character's expression, and verify results — all through natural language via Claude*
 
@@ -305,7 +304,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 
 The `get_state_snapshot` tool enables a pattern where the AI loops until a goal is visually confirmed:
 
-```
+```text
 ┌─────────────┐
 │  Apply edit │
 └──────┬──────┘
@@ -360,7 +359,7 @@ python run_tests.py
 ## Technical Architecture
 
 ### Plugin ↔ Server Communication
-```
+```text
 AI Client (Claude, etc.)
       │  MCP (stdio)
       ▼

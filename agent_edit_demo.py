@@ -142,8 +142,14 @@ except Exception as e:
     print(_tb.format_exc())
 """
 r = exec_gimp(bg_code)
+if r.get('status') != 'success':
+    print(f"ERROR: Background removal transport failed: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 output = (r.get('results') or [''])[0]
 print(f"  GIMP: {output.strip()}")
+if 'BG_REMOVED' not in output:
+    print(f"ERROR: Background removal failed: {output[:200]}", file=sys.stderr)
+    sys.exit(1)
 
 # ── STEP 3: Snapshot — after BG removal ─────────────────────────────────────
 print()
@@ -266,8 +272,14 @@ except Exception as e:
     print(_tb.format_exc())
 """
 r = exec_gimp(smile_code)
+if r.get('status') != 'success':
+    print(f"ERROR: Smile edit transport failed: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 output = (r.get('results') or [''])[0]
 print(f"  GIMP: {output.strip()}")
+if 'SMILE_DONE' not in output:
+    print(f"ERROR: Smile edit failed: {output[:200]}", file=sys.stderr)
+    sys.exit(1)
 
 # ── STEP 5: Snapshot — after smile edit (zoom into face) ────────────────────
 print()

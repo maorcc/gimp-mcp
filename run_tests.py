@@ -38,8 +38,11 @@ def t(name, r):
 
 # Setup
 r = cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
-img_id = r.get('results', {}).get('image_id')
+img_id = r.get('image_id') or r.get('results', {}).get('image_id')
 print(f"Setup: {r.get('status')} img_id={img_id}")
+if r.get('status') != 'success':
+    print(f"Setup failed: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 
 print()
 print("=== Cat 1: Info ===")
@@ -105,7 +108,7 @@ t('draw_rect',      cmd('draw_rectangle', {'image_index': 0, 'x': 10, 'y': 10, '
 t('draw_ellipse',   cmd('draw_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#00ff00', 'line_width': 2.0}))
 t('fill_rectangle', cmd('fill_rectangle', {'image_index': 0, 'x': 5, 'y': 5, 'width': 20, 'height': 20, 'color': '#ffff00'}))
 t('fill_ellipse',   cmd('fill_ellipse',   {'image_index': 0, 'x': 5, 'y': 5, 'width': 20, 'height': 20, 'color': '#ff00ff'}))
-t('gradient_fill',  cmd('gradient_fill',  {'image_index': 0, 'start_x': 0, 'start_y': 0, 'end_x': 80, 'end_y': 80}))
+t('gradient_fill',  cmd('gradient_fill',  {'image_index': 0, 'x1': 0, 'y1': 0, 'x2': 80, 'y2': 80}))
 
 print()
 print("=== Cat 7: Text ===")
@@ -115,7 +118,7 @@ t('list_fonts', cmd('list_fonts', {}))
 print()
 print("=== Cat 8: Filters ===")
 t('gaussian_blur', cmd('apply_gaussian_blur', {'image_index': 0, 'radius': 2.0}))
-t('pixelate',      cmd('apply_pixelate',      {'image_index': 0, 'size': 5}))
+t('pixelate',      cmd('apply_pixelate',      {'image_index': 0, 'block_size': 5}))
 t('emboss',        cmd('apply_emboss',        {'image_index': 0}))
 t('vignette',      cmd('apply_vignette',      {'image_index': 0}))
 t('noise',         cmd('apply_noise',         {'image_index': 0}))
