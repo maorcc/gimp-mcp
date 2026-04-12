@@ -2,342 +2,443 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Works with Claude Desktop](https://img.shields.io/badge/Works%20with-Claude%20Desktop-7B2CBF.svg)](https://claude.ai/desktop)
-[![GIMP 3.0](https://img.shields.io/badge/GIMP-3.0-orange.svg)](https://gimp.org)
+[![GIMP 3.2](https://img.shields.io/badge/GIMP-3.2-orange.svg)](https://gimp.org)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 [![CodeRabbit](https://img.shields.io/badge/CodeRabbit-AI%20Review-171717?logo=coderabbit)](https://coderabbit.ai)
 
+## Demo
+
+https://github.com/maorcc/gimp-mcp/raw/main/docs/demo.mp4
+
+<video src="docs/demo.mp4" controls width="100%"></video>
+
+*AI agent using GIMP MCP to remove a background, edit a character's expression, and verify results — all through natural language via Claude*
+
+---
+
 ## Overview
 
-This project enables non-technical users to edit images with GIMP through simple conversational commands, bridging the gap between GIMP's powerful capabilities and natural language interaction. It also allows professionals to execute complex multi-step workflows faster than traditional point-and-click methods.
+GIMP MCP bridges GIMP's professional image editing capabilities with AI assistants through the [Model Context Protocol](https://modelcontextprotocol.io). It lets you edit images by describing what you want — and gives the AI a live visual feedback channel to verify each change before moving on.
 
-Users can describe what they want to achieve - from basic photo adjustments to sophisticated artistic modifications. For example, "brighten the background and add a vintage filter" or "remove the red-eye and sharpen the subject" - and the system translates these requests into precise GIMP operations.
+**What makes it different from other GIMP integrations:**
 
-The project is fully functional and exposes all GIMP features via MCP (Model Context Protocol). **New in this version**: MCP-compliant image export that allows AI assistants like Claude to directly view and analyze your GIMP images!
+- The AI can *see* the image at any point in the workflow without saving to disk (`get_state_snapshot`)
+- Supports fully autonomous multi-step pipelines: open → edit → verify → refine → export
+- 56 dedicated tool commands covering every major GIMP operation
+- Fully compatible with GIMP 3.2.x (all breaking API changes resolved)
 
 ## Key Features
 
-✨ **MCP-Compliant Image Export**: Direct image viewing for AI assistants  
-🎨 **Full GIMP 3.0 API Access**: Execute any GIMP operation via PyGObject  
-🔧 **Multi-Format Export**: PNG, JPEG, BMP, TIFF with quality control  
-📊 **Image Metadata**: Get image info without transferring data  
-🛡️ **Robust Error Handling**: Multiple fallback methods for reliability  
-🔌 **Universal MCP Support**: Works with Claude Desktop, Gemini CLI, PydanticAI, and more
+| | |
+|---|---|
+| 👁️ **Live Visual Feedback** | `get_state_snapshot` returns a PNG preview mid-workflow so the AI verifies each step |
+| 🎨 **56 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
+| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (56/56 passing) |
+| 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
+| 🖼️ **Region Snapshots** | Zoom into any area for detail verification (face, mouth, corner, etc.) |
+| 🔌 **Universal MCP** | Works with Claude Desktop, Claude Code, Gemini CLI, PydanticAI, and more |
 
+## What Can It Do?
+
+### Background Removal with Iterative Verification
+The AI removes the background, takes a snapshot to inspect the result, detects remaining pixels, and loops until the image is clean:
+
+```
+"Remove the background from this image and keep looping until only the character remains"
+```
+
+### Expression Editing
+```
+"Make the character smile — paint a smile arc with teeth over her mouth"
+```
+
+### Complex Multi-Step Pipelines
+```
+"Open navi_portrait.png, remove the background, verify it's clean,
+ then make her smile and export the final result as a PNG"
+```
+
+### Color & Tone Work
+```
+"Boost the contrast, shift the hue 15 degrees warmer, then show me a before/after zoom of the face"
+```
+
+### Text & Compositing
+```
+"Add a bold title at the top in white with a subtle drop shadow, then export for web"
+```
+
+---
 
 ## Prerequisites
-* **GIMP 3.0 and above:** This project is developed and tested with GIMP 3.0. Earlier versions are not supported.
-* **MCP-compatible AI client:** Claude Desktop, Gemini CLI, PydanticAI, or other MCP clients.
-* **Python 3.8+:** Required for the MCP server.
-* **uv:** A modern Python package installer and resolver.
+
+- **GIMP 3.2+** — tested on GIMP 3.2.2 (Windows, macOS, Linux)
+- **Python 3.8+** — for the MCP server
+- **uv** — Python package manager (`pip install uv`)
+- **MCP-compatible AI client** — Claude Desktop, Claude Code, Gemini CLI, PydanticAI, etc.
+
+---
 
 ## Quick Start
 
 ### 1. Install Dependencies
+
 ```bash
-# Clone the repository
 git clone https://github.com/maorcc/gimp-mcp.git
 cd gimp-mcp
-
-# Install Python dependencies
 uv sync
 ```
 
 ### 2. Install the GIMP Plugin
 
-Copy the `gimp-mcp-plugin.py` to your GIMP `plug-ins` directory and make it executable.
+Copy `gimp-mcp-plugin.py` to GIMP's plug-ins directory and restart GIMP.
 
-**Quick Install (Linux):**
+**Linux (standard):**
 ```bash
-# For standard GIMP installation
 mkdir -p ~/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin
 cp gimp-mcp-plugin.py ~/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/
 chmod +x ~/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
+```
 
-# For Snap-installed GIMP
+**Linux (Snap):**
+```bash
 mkdir -p ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin
 cp gimp-mcp-plugin.py ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/
 chmod +x ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
 ```
 
-**Quick Install (macOS):**
+**macOS:**
 ```bash
 mkdir -p ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin
 cp gimp-mcp-plugin.py ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin/
 chmod +x ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
 ```
 
-**Manual Installation:**
+**Windows:**
+```
+%APPDATA%\GIMP\3.2\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
+```
+No chmod needed on Windows. Just copy and restart GIMP.
 
-For detailed instructions on locating your GIMP plugins folder across different operating systems, please refer to this guide:
-
-[**GIMP Plugin Installation Guide (Wikibooks)**](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
-
-Make sure the plugin file has "execute" permission.
-
-**Restart GIMP** after installation.
+> For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
 ### 3. Start the MCP Server in GIMP
+
 1. Open any image in GIMP
-2. Navigate to **Tools > Start MCP Server** 
-3. The server will start on `localhost:9877`
+2. Go to **Tools > Start MCP Server**
+3. Server starts on `localhost:9877`
 
 ### 4. Configure Your MCP Client
+
 #### Claude Desktop
-Add these lines to your Claude Desktop configuration file:  
-**Location**: `~/.config/Claude/claude_desktop_config.json` (Linux/macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
+`~/.config/Claude/claude_desktop_config.json` (Linux/macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
     "gimp": {
       "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "/full/path/to/gimp-mcp",
-        "gimp_mcp_server.py"
-      ]
+      "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
     }
   }
 }
 ```
 
+#### Claude Code
+```bash
+cd /path/to/gimp-mcp
+claude  # .mcp.json is auto-detected
+```
+
+Or manually:
+```bash
+claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
+```
+
 #### Gemini CLI
-Configure your Gemini CLI MCP server in `~/.config/gemini/.gemini_config.json`:
+`~/.config/gemini/.gemini_config.json`:
 ```json
 {
   "mcpServers": {
     "gimp": {
       "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "/full/path/to/gimp-mcp",
-        "gimp_mcp_server.py"
-      ]
+      "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
     }
   }
 }
 ```
 
 #### PydanticAI
-For PydanticAI agents, use the MCPServerStdio class:
 ```python
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPServerStdio
 
-server = MCPServerStdio(
-    'uv',
-    args=[
-        'run',
-        '--directory',
-        '/full/path/to/gimp-mcp',
-        'gimp_mcp_server.py'
-    ]
-)
-
+server = MCPServerStdio('uv', args=['run', '--directory', '/path/to/gimp-mcp', 'gimp_mcp_server.py'])
 agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ```
 
-#### Claude Code
-This repository includes a `.mcp.json` file for automatic MCP server discovery. Simply open the project directory in Claude Code and the GIMP MCP server will be available automatically:
-```bash
-cd /path/to/gimp-mcp
-claude
-```
-
-Alternatively, you can add it manually:
-```bash
-claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
-```
-
-#### Other MCP Clients
-For other MCP clients that support stdio transport, use the command:
-```bash
-uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
-```
-
-## Usage Examples
-
-### Basic Usage
-1. **Start GIMP** and open any image
-2. **Start MCP Server**: Tools > Start MCP Server  
-3. **Launch your MCP client** (Claude Desktop, etc.)
-4. **Start creating**: "Draw a face and a sheep with GIMP"
-
-### Advanced Features
-
-#### Image Analysis
-```
-"Can you show me the current image in GIMP and tell me what you see?"
-```
-*Uses `get_image_bitmap()` to retrieve and analyze the current canvas*
-
-#### Fast Image Information
-```
-"What are the dimensions and properties of the current image?"
-```
-*Uses `get_image_metadata()` to quickly get image info without transferring bitmap data*
-
-#### Smart Workflow Decisions
-```
-"Check if the current image has transparency and multiple layers before applying the effect"
-```
-*Uses `get_image_metadata()` to analyze image structure for intelligent decision making*
-
-#### Environment Discovery
-```
-"What version of GIMP am I working with and what features are available?"
-```
-*Uses `get_gimp_info()` to provide comprehensive environment information for optimal support*
-
-#### Troubleshooting Support
-```
-"I'm having issues with plugin exports - check my GIMP setup and suggest solutions"
-```
-*Uses `get_gimp_info()` to diagnose installation and configuration problems*
-
-#### Complex Workflows
-```
-"Create a new 800x600 image, draw a blue circle in the center, add a red border, then show me the result"
-```
-*Combines multiple GIMP operations with image export for verification*
+---
 
 ## Available MCP Tools
 
-The GIMP MCP server provides several tools that AI assistants can use:
+### 👁️ Visual Feedback
 
-### 🖼️ Image Export Tools
-- **`get_image_bitmap()`**
-
-Returns the current image as a base64-encoded PNG bitmap with support for region extraction and scaling.
-
-**Parameters:**
-- `max_width` (optional): Maximum width for full image scaling
-- `max_height` (optional): Maximum height for full image scaling  
-- `region` (optional): Dictionary for region extraction with keys:
-  - `origin_x`: X coordinate of region top-left corner
-  - `origin_y`: Y coordinate of region top-left corner  
-  - `width`: Width of region to extract
-  - `height`: Height of region to extract
-  - `max_width`: Maximum width for region scaling (optional)
-  - `max_height`: Maximum height for region scaling (optional)
-
-**Usage Examples:**
+#### `get_state_snapshot(image_index, max_size, region, label)`
+Returns a live PNG of the current image state — the AI's primary feedback mechanism. Call this between any edits to verify the result without saving to disk.
 
 ```python
-# Get full image bitmap
-result = await client.get_image_bitmap()
+# Full image snapshot
+snapshot = get_state_snapshot(max_size=512)
 
-# Get full image scaled to max 800x600 (preserves aspect ratio)
-result = await client.get_image_bitmap(max_width=800, max_height=600)
-
-# Extract a region (100,100) with size 400x300
-result = await client.get_image_bitmap(
-    region={"origin_x": 100, "origin_y": 100, "width": 400, "height": 300}
+# Zoom into a face region for detail inspection
+snapshot = get_state_snapshot(
+    region={"x": 140, "y": 80, "width": 240, "height": 300},
+    max_size=512,
+    label="face-check"
 )
+```
 
-# Extract region and scale it to 200x150 (preserves aspect ratio)
-result = await client.get_image_bitmap(
-    region={
-        "origin_x": 100, "origin_y": 100, "width": 400, "height": 300,
-        "max_width": 200, "max_height": 150
-    }
-)
+This enables iterative agentic workflows: **edit → snapshot → assess → refine → repeat**.
 
-if result['status'] == 'success':
-    image_data = result['results']['image_data']  # base64-encoded PNG
-    width = result['results']['width']
-    height = result['results']['height']
-    original_width = result['results']['original_width']
-    original_height = result['results']['original_height']
-    processing = result['results']['processing_applied']
+#### `get_image_bitmap(image_index, max_width, max_height, region)`
+Lower-level bitmap fetch with region extraction and scaling. Returns base64-encoded PNG.
 
-- **`get_image_metadata()`**: Get comprehensive image metadata without bitmap data (fast)
+### 🎨 Adjustments
+| Tool | Description |
+|---|---|
+| `adjust_brightness_contrast` | Brightness and contrast |
+| `adjust_curves` | Curves by channel (RGB/R/G/B/A) |
+| `adjust_hue_saturation` | Hue, saturation, lightness |
+| `adjust_color_balance` | Shadows/midtones/highlights color balance |
+| `auto_levels` | Auto-stretch levels |
+| `desaturate` | Convert to grayscale (keep RGB mode) |
+| `invert_colors` | Invert all channels |
+| `sharpen` | Unsharp mask sharpening |
+| `blur` | Gaussian blur |
+| `denoise` | Noise reduction |
 
-### 🔍 System Information Tools
-- **`get_gimp_info()`**: Get comprehensive GIMP installation and environment information
-- **`get_context_state()`**: Get current GIMP context state (colors, brush, feathering, opacity)
+### 🔄 Transforms
+| Tool | Description |
+|---|---|
+| `scale_image` | Scale to exact dimensions |
+| `scale_to_fit` | Scale within bounding box (aspect-safe) |
+| `crop_to_rect` | Crop to rectangle |
+| `rotate_image` | Rotate 90/180/270 or arbitrary angle |
+| `flip_image` | Flip horizontal or vertical |
+| `resize_canvas` | Resize canvas without scaling content |
 
-Returns current GIMP context state including foreground/background colors, brush, opacity, paint mode, feather settings, and antialiasing state.
+### ✂️ Selections
+| Tool | Description |
+|---|---|
+| `select_rectangle` | Rectangular marquee |
+| `select_ellipse` | Elliptical marquee |
+| `select_by_color` | Select by color (global) |
+| `select_all` / `select_none` | Select all / deselect |
+| `invert_selection` | Invert selection |
+| `modify_selection` | Grow, shrink, feather, or border |
 
-### 🔧 API Access Tool  
-- **`call_api(api_path, args, kwargs)`**: Execute any GIMP 3.0 PyGObject command
+### 🗂️ Layers
+| Tool | Description |
+|---|---|
+| `create_layer` | New empty layer |
+| `duplicate_layer` | Duplicate active layer |
+| `delete_layer` | Delete named layer |
+| `rename_layer` | Rename layer |
+| `set_layer_properties` | Opacity, blend mode, visibility |
+| `reorder_layer` | Move layer in stack |
+| `merge_visible_layers` | Flatten visible to one layer |
+| `flatten_image` | Flatten all layers |
+| `list_layers` | List all layers with properties |
 
-### 🎨 Common Operations Available
-- Create new images and layers
-- Draw shapes, lines, and curves  
-- Apply filters and effects
-- Adjust colors and brightness
-- Add text and selections
-- Copy/paste between images
-- Export in various formats
+### 🖌️ Drawing & Fill
+| Tool | Description |
+|---|---|
+| `fill_layer` | Fill entire layer with color |
+| `fill_selection` | Fill selection (foreground/background/transparent) |
+| `fill_rectangle` | Fill a rectangle region |
+| `fill_ellipse` | Fill an ellipse region |
+| `draw_line` | Draw a line (pencil or paintbrush) |
+| `draw_rectangle` | Draw a rectangle outline |
+| `draw_ellipse` | Draw an ellipse outline |
+| `gradient_fill` | Apply linear or radial gradient |
+| `set_colors` | Set foreground/background colors |
 
-For detailed API documentation, see [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md).
+### 🔤 Text
+| Tool | Description |
+|---|---|
+| `add_text` | Add a text layer |
+| `edit_text` | Edit existing text layer |
+| `list_fonts` | List available fonts |
+
+### ✨ Filters & Effects
+| Tool | Description |
+|---|---|
+| `apply_gaussian_blur` | Gaussian blur filter |
+| `apply_pixelate` | Pixelate/mosaic effect |
+| `apply_emboss` | Emboss effect |
+| `apply_vignette` | Vignette darkening |
+| `apply_noise` | Add noise/grain |
+| `apply_drop_shadow` | Drop shadow effect |
+
+### 📁 File Operations
+| Tool | Description |
+|---|---|
+| `open_image` | Open image file |
+| `export_image` | Export to PNG, JPEG, BMP, TIFF |
+| `new_canvas` | Create blank canvas |
+| `close_image` | Close image |
+| `list_images` | List open images |
+
+### 🔍 Info & Context
+| Tool | Description |
+|---|---|
+| `get_image_metadata` | Image size, mode, layers, filename |
+| `get_gimp_info` | GIMP version, platform, capabilities |
+| `get_context_state` | Current colors, brush, opacity, mode |
+| `get_pixel_color` | Color value at a specific pixel |
+| `get_histogram` | Histogram data for a channel |
+| `get_selection_bounds` | Current selection bounds |
+
+---
+
+## AI Agent Feedback Loop
+
+The `get_state_snapshot` tool enables a pattern where the AI loops until a goal is visually confirmed:
+
+```
+┌─────────────┐
+│  Apply edit │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐
+│ get_state_      │  ← AI sees live PNG, no disk save needed
+│ snapshot()      │
+└──────┬──────────┘
+       │
+       ▼
+┌─────────────────┐     ┌──────────────────┐
+│ Goal achieved?  │─ No─▶ Adjust & retry   │
+└──────┬──────────┘     └──────────────────┘
+       │ Yes
+       ▼
+┌─────────────┐
+│   Export    │
+└─────────────┘
+```
+
+### Example: Iterative Background Removal
+
+See [`bg_remove_iterative.py`](bg_remove_iterative.py) for a complete example. The AI:
+
+1. Removes the background using edge-seeded contiguous select
+2. Takes a snapshot to check the result
+3. Scans for remaining background-colored pixels
+4. Runs targeted removal passes with progressively finer grids (25px → 1px)
+5. Runs a final despeckle pass for isolated pixels
+6. Loops until no background pixels remain
+
+---
+
+## Example Scripts
+
+| Script | Description |
+|---|---|
+| [`run_tests.py`](run_tests.py) | 56-test suite — run against your GIMP to verify all tools work |
+| [`bg_remove_iterative.py`](bg_remove_iterative.py) | Iterative BG removal with snapshot checkpoints |
+| [`bg_remove.py`](bg_remove.py) | Simple single-pass background removal |
+| [`agent_edit_demo.py`](agent_edit_demo.py) | Full pipeline: open → remove BG → edit expression → export |
+
+Run the test suite to verify your setup:
+```bash
+python run_tests.py
+# Expected: 56/56 PASSED
+```
+
+---
 
 ## Technical Architecture
 
-### MCP Compliance
-- **Image Content**: Returns proper `ImageContent` objects with base64 data and MIME types
-- **Error Handling**: Uses MCP-standard exception propagation  
-- **Tool Metadata**: Comprehensive tool descriptions and parameter schemas
-- **Protocol Version**: Compatible with MCP specification 2025-06-18
+### Plugin ↔ Server Communication
+```
+AI Client (Claude, etc.)
+      │  MCP (stdio)
+      ▼
+gimp_mcp_server.py          ← MCP tool definitions
+      │  TCP JSON  :9877
+      ▼
+gimp-mcp-plugin.py          ← Runs inside GIMP process
+      │  PyGObject
+      ▼
+GIMP 3.2 (gi.repository.Gimp)
+```
 
-### GIMP 3.0 Integration
-- **PyGObject API**: Direct access to GIMP's Python bindings
-- **Persistent Context**: Command execution maintains state between calls
-- **Robust Export**: Multiple fallback methods for reliable image export
-- **Real-time Updates**: Immediate display refresh with `Gimp.displays_flush()`
+- MCP server translates tool calls into JSON commands sent to the plugin over TCP
+- Plugin executes operations directly in the GIMP process via PyGObject
+- Two message formats: `{"type": "...", "params": {...}}` for named tools, `{"cmds": ["python..."]}` for arbitrary exec
+
+### GIMP 3.2 Compatibility Notes
+
+GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in this release:
+
+| Issue | Fix |
+|---|---|
+| `layer.copy(False)` → error | `layer.copy()` takes no args in GIMP 3.2 |
+| `Gimp.text_fontname()` removed | Use PDB `gimp-text-fontname` |
+| `gimp-blend` removed | Use GEGL `gegl:linear-gradient` / `gegl:radial-gradient` |
+| `GimpDoubleArray` TypeError in curves | Use `drawable.curves_spline()` directly |
+| `Gimp.fonts_get_list()` returns `Font` objects | Convert via `.get_name()` before JSON serialization |
+| `image.select_none()` removed | Use PDB `gimp-selection-none` |
+| `layer.get_pixel()` returns `Gegl.Color` | Use `.get_rgba()` to extract float components |
+
+---
 
 ## Troubleshooting
 
-### Common Issues
+### "Could not connect to GIMP"
+- GIMP must be running with an image open
+- Start the MCP server: **Tools > Start MCP Server**
+- Check port 9877 is not blocked by firewall
 
-#### "Could not connect to GIMP"
-- Ensure GIMP is running with an open image
-- Verify the MCP Server is started (Tools > Start MCP Server)
-- Check that port 9877 is not blocked by firewall
-
-#### Export Errors
-- The plugin includes multiple fallback export methods
-- Supports various GIMP 3.0 API versions
-- Automatically handles missing export procedures
-
-#### Plugin Not Visible
-- Verify plugin is in correct directory with execute permissions
+### Plugin Not Visible in GIMP
+- Confirm the plugin file is in the correct directory (see install steps above)
+- On Linux/macOS: ensure the file has execute permission (`chmod +x`)
 - Restart GIMP after installation
-- Check GIMP's error console for plugin loading issues
+- Check **Filters > Script-Fu > Console** for error messages
+
+### Tests Failing
+Run the test suite and check the failure list:
+```bash
+python run_tests.py
+```
+Each failure includes the tool name and error — most issues on GIMP 3.2 are covered by the fixes above.
 
 ### Debug Mode
-Add debug logging to see detailed MCP communication:
 ```bash
 GIMP_MCP_DEBUG=1 uv run --directory /path/to/gimp-mcp gimp_mcp_server.py
 ```
+
+---
 
 ## Example Output
 
 <img src="gimp-screenshot1.png" alt="GIMP MCP Example" width="400">
 
-*Example output from the prompt "draw me a face and a sheep" using GIMP MCP*
+*"Draw me a face and a sheep" — generated entirely through natural language via GIMP MCP*
+
+---
 
 ## Future Enhancements
 
-We welcome contributions! Here are some areas for improvement:
+- **📚 Recipe Collection**: Reusable workflow templates (portrait cleanup, product photo, etc.)
+- **↩️ Undo System**: History management and rollback via MCP
+- **🚀 Dynamic Discovery**: Auto-generate MCP tools from GIMP's full PDB procedure database
+- **🔒 Security**: Sandboxed execution for untrusted command inputs
+- **⚡ Performance**: Optimized bitmap transfer for large images
+- **🌐 Remote Access**: Network-accessible GIMP instances
 
-### Planned Features
-- **📚 Recipe Collection**: Common GIMP workflows as reusable MCP tools
-- **↩️ Undo System**: History management and rollback capabilities  
-- **🔍 Visual Feedback**: Enhanced progress indicators and operation previews
-- **🚀 Dynamic Discovery**: Auto-generate MCP tools from GIMP's procedure database
-- **📝 Enhanced Errors**: Context-aware error messages with suggested fixes
-- **🛡️ Resource Management**: Better cleanup and error recovery in the plugin
-
-### Architecture Improvements
-- **🔒 Security**: Sandboxed execution environment for user commands
-- **⚡ Performance**: Optimized image transfer for large files
-- **🌐 Remote Access**: Support for network-accessible GIMP instances
-- **📊 Analytics**: Usage metrics and performance monitoring
+---
 
 ## Contributing
 
-Contributions are welcome! Whether it's bug fixes, new features, or documentation improvements, feel free to submit a Pull Request or open an issue.
+Contributions are welcome — bug fixes, new tools, documentation, or example scripts. Open a PR or issue on GitHub.
