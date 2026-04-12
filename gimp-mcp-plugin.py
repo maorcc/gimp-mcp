@@ -3218,7 +3218,15 @@ class MCPPlugin(Gimp.PlugIn):
     # =========================================================================
 
     def _apply_drop_shadow(self, params):
-        """Apply drop shadow effect."""
+        """Apply drop shadow via manual layer compositing (GIMP 3.2 compatible).
+
+        gegl:drop-shadow and plug-in-drop-shadow are not reliably available in
+        GIMP 3.2, so we build the shadow manually:
+          1. Duplicate source layer → shadow_layer
+          2. Fill it with shadow color (alpha-locked so shape is preserved)
+          3. Set opacity and offset
+          4. Gaussian-blur with plug-in-gauss
+        """
         try:
             from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
@@ -3233,25 +3241,37 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("plug-in-drop-shadow")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("image",    image)
-                    cfg.set_property("drawable", drawable)
-                    cfg.set_property("offset-x", offset_x)
-                    cfg.set_property("offset-y", offset_y)
-                    cfg.set_property("blur-radius", blur_radius)
-                    cfg.set_property("color",    Gegl.Color.new(color_str))
-                    cfg.set_property("opacity",  opacity)
-                    cfg.set_property("allow-resize", False)
-                    proc.run(cfg)
-                else:
-                    self._apply_gegl_filter(image, drawable, "gegl:drop-shadow", {
-                        "x": float(offset_x),
-                        "y": float(offset_y),
-                        "radius": blur_radius,
-                        "opacity": opacity / 100.0,
-                    })
+
+                # 1. Duplicate source layer to use as shadow base
+                shadow_layer = drawable.copy()
+                src_pos = image.get_item_position(drawable)
+                image.insert_layer(shadow_layer, None, src_pos + 1)
+
+                # 2. Fill shadow layer with shadow color, preserving alpha shape
+                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                shadow_layer.set_lock_alpha(True)
+                Gimp.Drawable.edit_fill(shadow_layer, Gimp.FillType.FOREGROUND)
+                shadow_layer.set_lock_alpha(False)
+
+                # 3. Set opacity and offset
+                shadow_layer.set_opacity(opacity)
+                offs = shadow_layer.get_offsets()
+                shadow_layer.set_offsets(offs.offset_x + offset_x, offs.offset_y + offset_y)
+
+                # 4. Blur with plug-in-gauss (always available in GIMP 3.x)
+                if blur_radius > 0:
+                    size = max(3, int(blur_radius * 2) | 1)  # must be odd, ≥ 3
+                    blur_proc = pdb.lookup_procedure("plug-in-gauss")
+                    if blur_proc:
+                        cfg = blur_proc.create_config()
+                        cfg.set_property("image",      image)
+                        cfg.set_property("drawable",   shadow_layer)
+                        cfg.set_property("horizontal", size)
+                        cfg.set_property("vertical",   size)
+                        cfg.set_property("method",     0)
+                        blur_proc.run(cfg)
+
+                shadow_layer.set_name("Drop Shadow")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
