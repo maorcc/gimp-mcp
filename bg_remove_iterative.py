@@ -7,8 +7,11 @@ Loop:
   2. Run contiguous-select (magic wand) + delete on each found seed point
   3. Snapshot → agent inspects result
   4. Repeat until no BG pixels remain or max iterations hit
+
+Usage:
+    python bg_remove_iterative.py --input path/to/image.png --output-dir path/to/output/
 """
-import socket, json, base64
+import argparse, socket, json, base64, sys
 
 # ── transport ───────────────────────────────────────────────────────────────
 
@@ -168,8 +171,13 @@ except Exception as e:
 
 # ── main ────────────────────────────────────────────────────────────────────
 
-OUT = 'C:/localMll/cruellaOutput'
-SRC = 'C:/localMll/cruellaOutput/navi_portrait.png'
+parser = argparse.ArgumentParser(description="Iterative background removal via GIMP MCP")
+parser.add_argument("--input",      required=True, help="Path to input image")
+parser.add_argument("--output-dir", required=True, dest="output_dir", help="Directory to save snapshots and final result")
+args = parser.parse_args()
+
+OUT = args.output_dir.rstrip('/\\')
+SRC = args.input
 
 print("=" * 60)
 print("Iterative background removal with snapshot feedback")
@@ -182,6 +190,9 @@ for _ in r.get('results', {}).get('images', []):
     cmd('close_image', {'image_index': 0})
 r = cmd('open_image', {'file_path': SRC})
 print(f"  Opened: {r.get('status')}  id={r.get('results',{}).get('image_id')}")
+if r.get('status') != 'success':
+    print(f"ERROR: Could not open {SRC}: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 
 r = exec_gimp(INIT_CODE)
 out = (r.get('results') or [''])[0]
