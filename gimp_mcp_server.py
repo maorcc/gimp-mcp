@@ -49,7 +49,7 @@ class GimpConnection:
             self.connect()
         command = {"type": command_type, "params": params or {"args": []}}
         try:
-            self.sock.sendall(json.dumps(command).encode('utf-8'))
+            self.sock.sendall(json.dumps(command).encode('utf-8') + b'\n')
             response_data = b''
             while True:
                 chunk = self.sock.recv(8192)
@@ -61,12 +61,12 @@ class GimpConnection:
                     break
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
-            self.sock = None
             return json.loads(response_data.decode('utf-8'))
         except Exception as e:
             logger.error(f"Communication error: {e}")
-            self.sock = None
             raise Exception(f"Error communicating with GIMP: {e}")
+        finally:
+            self.disconnect()
 
 # Global connection
 _gimp_connection = None
@@ -175,11 +175,13 @@ def new_canvas(
         base_type = mode_map.get(color_mode.upper(), "Gimp.ImageBaseType.RGB")
         layer_type = layer_type_map.get(color_mode.upper(), "Gimp.ImageType.RGB_IMAGE")
 
+        safe_name = json.dumps(name)
+        safe_fill = json.dumps(fill)
         fill_cmd = (
             "Gimp.context_set_background(Gegl.Color.new('white'))\n"
             "fill_type = Gimp.FillType.TRANSPARENT"
             if fill.lower() == "transparent"
-            else f"bg_color = Gegl.Color.new('{fill}')\nGimp.context_set_background(bg_color)"
+            else f"bg_color = Gegl.Color.new({safe_fill})\nGimp.context_set_background(bg_color)"
         )
         fill_type = "Gimp.FillType.TRANSPARENT" if fill.lower() == "transparent" else "Gimp.FillType.BACKGROUND"
 
@@ -187,7 +189,7 @@ def new_canvas(
             "from gi.repository import Gimp, Gegl",
             f"_nc_image = Gimp.Image.new({width}, {height}, {base_type})",
             f"_nc_image.set_resolution({resolution}, {resolution})",
-            f"_nc_layer = Gimp.Layer.new(_nc_image, '{name}', {width}, {height}, {layer_type}, 100, Gimp.LayerMode.NORMAL)",
+            f"_nc_layer = Gimp.Layer.new(_nc_image, {safe_name}, {width}, {height}, {layer_type}, 100, Gimp.LayerMode.NORMAL)",
             "_nc_image.insert_layer(_nc_layer, None, 0)",
             fill_cmd,
             f"Gimp.Drawable.edit_fill(_nc_layer, {fill_type})",
@@ -1756,14 +1758,16 @@ def fill_layer(
 @mcp.tool()
 def fill_selection(
     ctx: Context,
-    color: str,
+    color: str | None = None,
+    fill_type: str | None = None,
     image_index: int = 0,
     layer_name: str | None = None
 ) -> dict:
-    """Fill the current selection with a solid color.
+    """Fill the current selection with a color or fill type.
 
     Parameters:
-    - color: Fill color as CSS name, hex, or rgb() string
+    - color: Fill color as CSS name, hex, or rgb() string (used when fill_type is omitted)
+    - fill_type: Fill type override: "foreground", "background", or "transparent"
     - image_index: Target image index (default 0)
     - layer_name: Target layer; defaults to active layer
 
@@ -1772,7 +1776,8 @@ def fill_selection(
     try:
         conn = get_gimp_connection()
         result = conn.send_command("fill_selection", {
-            "color": color, "image_index": image_index, "layer_name": layer_name,
+            "color": color, "fill_type": fill_type,
+            "image_index": image_index, "layer_name": layer_name,
         })
         if result["status"] == "success":
             return result["results"]

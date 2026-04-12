@@ -344,6 +344,11 @@ try:
     print("SPECKLE_COUNT:" + str(len(green_pts)))
 
     if green_pts:
+        MAX_SPECKLES = 2000
+        if len(green_pts) > MAX_SPECKLES:
+            print("SPECKLE_CAPPED:" + str(MAX_SPECKLES))
+            green_pts = green_pts[:MAX_SPECKLES]
+
         # Build selection from individual 1×1 rectangles — works on isolated pixels
         # that contiguous-select cannot reach.
         sel_proc = pdb.lookup_procedure("gimp-image-select-rectangle")

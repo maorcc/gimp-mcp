@@ -2,12 +2,15 @@
 """
 Demo: AI agent editing loop using get_state_snapshot for visual feedback.
 Pipeline:
-  1. Open navi_portrait.png
+  1. Open input image
   2. Remove background  -> snapshot (verify BG gone)
   3. Warp mouth corners up (smile) -> snapshot face region (verify smile)
   4. Export final PNG
+
+Usage:
+    python agent_edit_demo.py --input path/to/portrait.png --output-dir path/to/output/
 """
-import socket, json, base64, struct, zlib
+import argparse, socket, json, base64, struct, zlib, sys
 
 # ── low-level transport ─────────────────────────────────────────────────────
 
@@ -71,6 +74,13 @@ def save_png(raw_bytes, path):
         f.write(raw_bytes)
     print(f"  Saved: {path}")
 
+parser = argparse.ArgumentParser(description="AI agent editing demo via GIMP MCP")
+parser.add_argument("--input",      required=True, help="Path to input portrait image")
+parser.add_argument("--output-dir", required=True, dest="output_dir", help="Directory to save snapshots and final result")
+args = parser.parse_args()
+
+OUT = args.output_dir.rstrip('/\\')
+
 # ── STEP 0: close previous images, open original ────────────────────────────
 print("="*60)
 print("STEP 0: Open original image")
@@ -78,14 +88,17 @@ r = cmd('list_images', {})
 for _ in r.get('results', {}).get('images', []):
     cmd('close_image', {'image_index': 0})
 
-r = cmd('open_image', {'file_path': 'C:/localMll/cruellaOutput/navi_portrait.png'})
+r = cmd('open_image', {'file_path': args.input})
 print(f"  Opened: {r.get('status')}  id={r.get('results',{}).get('image_id')}")
+if r.get('status') != 'success':
+    print(f"ERROR: Could not open {args.input}: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 
 # ── STEP 1: Snapshot — original state ───────────────────────────────────────
 print()
 print("STEP 1: Snapshot BEFORE edits (original)")
 raw = snapshot(label="original")
-if raw: save_png(raw, 'C:/localMll/cruellaOutput/snap_01_original.png')
+if raw: save_png(raw, f'{OUT}/snap_01_original.png')
 
 # ── STEP 2: Remove background ───────────────────────────────────────────────
 print()
@@ -136,12 +149,12 @@ print(f"  GIMP: {output.strip()}")
 print()
 print("STEP 3: Snapshot AFTER background removal (agent verifies BG gone)")
 raw = snapshot(label="no-bg")
-if raw: save_png(raw, 'C:/localMll/cruellaOutput/snap_02_nobg.png')
+if raw: save_png(raw, f'{OUT}/snap_02_nobg.png')
 
 # Also zoom into face area for the agent to check
 print("  Zooming into face region for detail check...")
 raw_face = snapshot(region={'x': 140, 'y': 80, 'w': 240, 'h': 300}, label="face-region")
-if raw_face: save_png(raw_face, 'C:/localMll/cruellaOutput/snap_03_face_detail.png')
+if raw_face: save_png(raw_face, f'{OUT}/snap_03_face_detail.png')
 
 # ── STEP 4: Smile edit — paint smile over neutral mouth ─────────────────────
 print()
@@ -260,27 +273,31 @@ print(f"  GIMP: {output.strip()}")
 print()
 print("STEP 5: Snapshot AFTER smile paint (agent verifies expression change)")
 raw = snapshot(label="with-smile")
-if raw: save_png(raw, 'C:/localMll/cruellaOutput/snap_04_smile.png')
+if raw: save_png(raw, f'{OUT}/snap_04_smile.png')
 
 raw_mouth = snapshot(region={'x': 170, 'y': 310, 'w': 180, 'h': 100}, label="mouth-zoom")
-if raw_mouth: save_png(raw_mouth, 'C:/localMll/cruellaOutput/snap_05_mouth_zoom.png')
+if raw_mouth: save_png(raw_mouth, f'{OUT}/snap_05_mouth_zoom.png')
 
 # ── STEP 6: Export final ─────────────────────────────────────────────────────
 print()
 print("STEP 6: Export final result")
+final_out = f'{OUT}/result_smile_nobg.png'
 r = cmd('export_image', {
     'image_index': 0,
-    'file_path':   'C:/localMll/cruellaOutput/navi_smile_nobg.png',
+    'file_path':   final_out,
     'file_type':   'png',
 })
-print(f"  Export: {r.get('status')} -> navi_smile_nobg.png")
+print(f"  Export: {r.get('status')} -> {final_out}")
+if r.get('status') != 'success':
+    print(f"ERROR: Export failed: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 
 print()
 print("="*60)
-print("DONE. Snapshots saved to C:/localMll/cruellaOutput/")
+print(f"DONE. Snapshots saved to {OUT}/")
 print("  snap_01_original.png    <- before any edits")
 print("  snap_02_nobg.png        <- after BG removal (agent checkpoint)")
 print("  snap_03_face_detail.png <- zoomed face (agent checkpoint)")
 print("  snap_04_smile.png       <- after smile warp (agent checkpoint)")
 print("  snap_05_mouth_zoom.png  <- zoomed mouth (agent fine-check)")
-print("  navi_smile_nobg.png     <- final exported result")
+print("  result_smile_nobg.png   <- final exported result")

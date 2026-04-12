@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import socket, json
+import socket, json, sys
 
 def cmd(t, params=None):
     s = socket.socket()
@@ -47,7 +47,7 @@ t('get_gimp_info',    cmd('get_gimp_info'))
 t('list_images',      cmd('list_images', {}))
 t('get_metadata',     cmd('get_image_metadata'))
 t('list_layers',      cmd('list_layers', {'image_index': 0}))
-t('pixel_color',      cmd('get_pixel_color', {'image_id': img_id, 'x': 10, 'y': 10}))
+t('pixel_color',      cmd('get_pixel_color', {'image_index': 0, 'x': 10, 'y': 10}))
 t('get_histogram',    cmd('get_histogram', {'image_index': 0, 'channel': 'value'}))
 t('selection_bounds', cmd('get_selection_bounds', {'image_index': 0}))
 
@@ -57,9 +57,9 @@ t('auto_levels',   cmd('auto_levels', {'image_index': 0}))
 t('adjust_curves', cmd('adjust_curves', {'image_index': 0, 'channel': 'value', 'points': [0,0,128,148,255,255]}))
 t('brightness',    cmd('adjust_brightness_contrast', {'image_index': 0, 'brightness': 10, 'contrast': 5}))
 t('hue_sat',       cmd('adjust_hue_saturation', {'image_index': 0, 'hue': 5, 'saturation': 10, 'lightness': 0}))
-t('color_balance', cmd('adjust_color_balance', {'image_index': 0, 'shadows': [10,0,-10], 'midtones': [0,5,0], 'highlights': [-5,0,10]}))
+t('color_balance', cmd('adjust_color_balance', {'image_index': 0, 'cyan_red': 10, 'magenta_green': 0, 'yellow_blue': -10}))
 t('sharpen',       cmd('sharpen',       {'image_index': 0, 'amount': 0.3}))
-t('blur',          cmd('blur',          {'image_index': 0, 'radius': 1.0}))
+t('blur',          cmd('blur',          {'image_index': 0, 'radius_x': 1.0, 'radius_y': 1.0}))
 t('denoise',       cmd('denoise',       {'image_index': 0}))
 t('desaturate',    cmd('desaturate',    {'image_index': 0}))
 t('invert',        cmd('invert_colors', {'image_index': 0}))
@@ -77,11 +77,11 @@ print()
 print("=== Cat 4: Selections ===")
 t('select_rect',    cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 40, 'height': 40}))
 t('select_ellipse', cmd('select_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 40, 'height': 40}))
-t('select_color',   cmd('select_by_color',  {'image_index': 0, 'x': 5, 'y': 5}))
+t('select_color',   cmd('select_by_color',  {'image_index': 0, 'color': '#ffffff'}))
 t('select_all',     cmd('select_all',       {'image_index': 0}))
 t('select_none',    cmd('select_none',      {'image_index': 0}))
 t('invert_sel',     cmd('invert_selection', {'image_index': 0}))
-t('modify_sel',     cmd('modify_selection', {'image_index': 0, 'operation': 'grow', 'value': 3}))
+t('modify_sel',     cmd('modify_selection', {'image_index': 0, 'operation': 'grow', 'amount': 3}))
 
 print()
 print("=== Cat 5: Layers ===")
@@ -101,8 +101,8 @@ t('fill_layer',     cmd('fill_layer',     {'image_index': 0, 'color': '#ff0000'}
 t('set_colors',     cmd('set_colors',     {'foreground': '#000000', 'background': '#ffffff'}))
 t('fill_selection', cmd('fill_selection', {'image_index': 0, 'fill_type': 'foreground'}))
 t('draw_line',      cmd('draw_line',      {'image_index': 0, 'x1': 0, 'y1': 0, 'x2': 50, 'y2': 50, 'color': '#000000', 'width': 2}))
-t('draw_rect',      cmd('draw_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#0000ff', 'filled': False}))
-t('draw_ellipse',   cmd('draw_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#00ff00', 'filled': True}))
+t('draw_rect',      cmd('draw_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#0000ff', 'line_width': 2.0}))
+t('draw_ellipse',   cmd('draw_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 30, 'height': 30, 'color': '#00ff00', 'line_width': 2.0}))
 t('fill_rectangle', cmd('fill_rectangle', {'image_index': 0, 'x': 5, 'y': 5, 'width': 20, 'height': 20, 'color': '#ffff00'}))
 t('fill_ellipse',   cmd('fill_ellipse',   {'image_index': 0, 'x': 5, 'y': 5, 'width': 20, 'height': 20, 'color': '#ff00ff'}))
 t('gradient_fill',  cmd('gradient_fill',  {'image_index': 0, 'start_x': 0, 'start_y': 0, 'end_x': 80, 'end_y': 80}))
@@ -110,7 +110,7 @@ t('gradient_fill',  cmd('gradient_fill',  {'image_index': 0, 'start_x': 0, 'star
 print()
 print("=== Cat 7: Text ===")
 t('add_text',   cmd('add_text',   {'image_index': 0, 'text': 'Hello', 'x': 10, 'y': 10, 'size': 12, 'color': '#000000'}))
-t('list_fonts', cmd('list_fonts', {'limit': 20}))
+t('list_fonts', cmd('list_fonts', {}))
 
 print()
 print("=== Cat 8: Filters ===")
@@ -127,3 +127,5 @@ if failures:
     print("Failures:")
     for n, e in failures:
         print(f"  {n}: {e}")
+
+sys.exit(1 if failures else 0)

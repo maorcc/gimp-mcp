@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Remove background from navi_portrait.png using contiguous (fuzzy) select."""
-import socket, json
+"""Remove background from an image using contiguous (fuzzy) select.
+
+Usage:
+    python bg_remove.py --input path/to/image.png --output path/to/output.png
+"""
+import argparse, socket, json, sys
 
 def cmd(t, params=None):
     s = socket.socket()
@@ -40,6 +44,11 @@ def exec_cmds(code_list):
     try: return json.loads(r.decode().strip())
     except: return {'status': 'error', 'error': 'parse: ' + r.decode()[:200]}
 
+parser = argparse.ArgumentParser(description="Remove background from an image via GIMP MCP")
+parser.add_argument("--input",  required=True, help="Path to input image")
+parser.add_argument("--output", required=True, help="Path to save result PNG")
+args = parser.parse_args()
+
 # Close everything and start fresh
 r = cmd('list_images', {})
 imgs = r.get('results', {}).get('images', [])
@@ -47,8 +56,11 @@ for _ in imgs:
     cmd('close_image', {'image_index': 0})
 
 # Open original
-r = cmd('open_image', {'file_path': 'C:/localMll/cruellaOutput/navi_portrait.png'})
+r = cmd('open_image', {'file_path': args.input})
 print(f"Opened: {r.get('status')}")
+if r.get('status') != 'success':
+    print(f"ERROR: Could not open {args.input}: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 
 bg_removal_code = r"""
 from gi.repository import Gimp, Gegl
@@ -123,6 +135,8 @@ r = exec_cmds([bg_removal_code])
 output = r.get('results', [''])[0] if r.get('results') else r.get('error', '')
 print(f"GIMP output: {output}")
 
-out_path = 'C:/localMll/cruellaOutput/navi_nobg.png'
-r = cmd('export_image', {'image_index': 0, 'file_path': out_path, 'file_type': 'png'})
-print(f"Export: {r.get('status')} -> {out_path}")
+r = cmd('export_image', {'image_index': 0, 'file_path': args.output, 'file_type': 'png'})
+print(f"Export: {r.get('status')} -> {args.output}")
+if r.get('status') != 'success':
+    print(f"ERROR: Export failed: {r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
