@@ -113,12 +113,19 @@ try:
     if not layer.has_alpha(): layer.add_alpha()
     pdb  = Gimp.get_pdb()
     proc = pdb.lookup_procedure("gimp-image-select-contiguous-color")
-    bg_pts = [
-        (50,3),(100,3),(150,3),(200,3),(250,3),(300,3),(350,3),(400,3),(450,3),(505,3),
-        (3,50),(3,100),(3,150),(3,200),(3,250),(3,300),(3,350),(3,400),
-        (509,50),(509,100),(509,150),(509,200),(509,250),(509,350),
-        (3,509),(100,509),(509,509),(400,509),
-    ]
+    # Edge sample points scaled to image size (originally hard-coded for 512x512).
+    w = image.get_width(); h = image.get_height()
+    xmax = w - 3; ymax = h - 3
+    top_xs  = [int(w*f) for f in (0.10,0.20,0.29,0.39,0.49,0.59,0.68,0.78,0.88,0.98)]
+    side_ys = [int(h*f) for f in (0.10,0.20,0.29,0.39,0.49,0.59,0.68,0.78)]
+    right_ys= [int(h*f) for f in (0.10,0.20,0.29,0.39,0.49,0.68)]
+    bot_xs  = [int(w*f) for f in (0.20,0.78)]
+    bg_pts = (
+        [(x,3) for x in top_xs] +
+        [(3,y) for y in side_ys] +
+        [(xmax,y) for y in right_ys] +
+        [(3,ymax)] + [(x,ymax) for x in bot_xs] + [(xmax,ymax)]
+    )
     for i,(bx,by) in enumerate(bg_pts):
         op = Gimp.ChannelOps.REPLACE if i==0 else Gimp.ChannelOps.ADD
         cfg = proc.create_config()
