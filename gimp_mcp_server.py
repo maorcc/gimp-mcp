@@ -160,70 +160,18 @@ def new_canvas(
     - new_canvas(512, 512, color_mode="RGBA", fill="transparent")
     """
     try:
-        mode_map = {
-            "RGB": "Gimp.ImageBaseType.RGB",
-            "RGBA": "Gimp.ImageBaseType.RGB",
-            "GRAY": "Gimp.ImageBaseType.GRAY",
-            "GRAYA": "Gimp.ImageBaseType.GRAY",
-        }
-        layer_type_map = {
-            "RGB":   "Gimp.ImageType.RGB_IMAGE",
-            "RGBA":  "Gimp.ImageType.RGBA_IMAGE",
-            "GRAY":  "Gimp.ImageType.GRAY_IMAGE",
-            "GRAYA": "Gimp.ImageType.GRAYA_IMAGE",
-        }
-        base_type = mode_map.get(color_mode.upper(), "Gimp.ImageBaseType.RGB")
-        layer_type = layer_type_map.get(color_mode.upper(), "Gimp.ImageType.RGB_IMAGE")
-
-        safe_name = json.dumps(name)
-        safe_fill = json.dumps(fill)
-        fill_cmd = (
-            "Gimp.context_set_background(Gegl.Color.new('white'))\n"
-            "fill_type = Gimp.FillType.TRANSPARENT"
-            if fill.lower() == "transparent"
-            else f"bg_color = Gegl.Color.new({safe_fill})\nGimp.context_set_background(bg_color)"
-        )
-        fill_type = "Gimp.FillType.TRANSPARENT" if fill.lower() == "transparent" else "Gimp.FillType.BACKGROUND"
-
-        cmds = [
-            "from gi.repository import Gimp, Gegl",
-            f"_nc_image = Gimp.Image.new({width}, {height}, {base_type})",
-            f"_nc_image.set_resolution({resolution}, {resolution})",
-            f"_nc_layer = Gimp.Layer.new(_nc_image, {safe_name}, {width}, {height}, {layer_type}, 100, Gimp.LayerMode.NORMAL)",
-            "_nc_image.insert_layer(_nc_layer, None, 0)",
-            fill_cmd,
-            f"Gimp.Drawable.edit_fill(_nc_layer, {fill_type})",
-            "_nc_display = Gimp.Display.new(_nc_image)",
-            "Gimp.displays_flush()",
-            "print(_nc_image.get_id())",
-        ]
         conn = get_gimp_connection()
-        result = conn.send_command("call_api", {
-            "api_path": "exec",
-            "args": ["pyGObject-console", cmds],
-            "kwargs": {}
-        })
-        if result["status"] != "success":
-            raise Exception(result.get("error", "Unknown error"))
-
-        output = result.get("results") or []
-        image_id = None
-        if output:
-            try:
-                image_id = int(str(output[-1]).strip())
-            except (ValueError, IndexError):
-                pass
-
-        return {
-            "status": "success",
-            "image_id": image_id,
+        result = conn.send_command("new_canvas", {
             "width": width,
             "height": height,
+            "name": name,
             "color_mode": color_mode,
             "fill": fill,
             "resolution": resolution,
-            "display_opened": True,
-        }
+        })
+        if result["status"] != "success":
+            raise Exception(result.get("error", "Unknown error"))
+        return result["results"]
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Failed to create new canvas: {e}")
