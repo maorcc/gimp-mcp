@@ -4,45 +4,41 @@
 Usage:
     python bg_remove.py --input path/to/image.png --output path/to/output.png
 """
-import argparse, socket, json, sys
+import argparse
+import socket
+import json
+import sys
+
+def _send(msg, parse_truncate=120):
+    s = socket.socket()
+    s.settimeout(30)
+    s.connect(('127.0.0.1', 9877))
+    s.send(json.dumps(msg).encode() + b'\n')
+    r = b''
+    while True:
+        try:
+            d = s.recv(8192)
+            if not d:
+                break
+            r += d
+            try:
+                json.loads(r.decode())
+                break
+            except json.JSONDecodeError:
+                continue
+        except socket.timeout:
+            break
+    s.close()
+    try:
+        return json.loads(r.decode().strip())
+    except json.JSONDecodeError:
+        return {'status': 'error', 'error': 'parse: ' + r.decode()[:parse_truncate]}
 
 def cmd(t, params=None):
-    s = socket.socket()
-    s.settimeout(30)
-    s.connect(('127.0.0.1', 9877))
-    msg = {'type': t, 'params': params if params is not None else {}}
-    s.send(json.dumps(msg).encode() + b'\n')
-    r = b''
-    while True:
-        try:
-            d = s.recv(8192)
-            if not d: break
-            r += d
-            try: json.loads(r.decode()); break
-            except: continue
-        except socket.timeout: break
-    s.close()
-    try: return json.loads(r.decode().strip())
-    except: return {'status': 'error', 'error': 'parse: ' + r.decode()[:120]}
+    return _send({'type': t, 'params': params if params is not None else {}}, 120)
 
 def exec_cmds(code_list):
-    s = socket.socket()
-    s.settimeout(30)
-    s.connect(('127.0.0.1', 9877))
-    msg = {'cmds': code_list}
-    s.send(json.dumps(msg).encode() + b'\n')
-    r = b''
-    while True:
-        try:
-            d = s.recv(8192)
-            if not d: break
-            r += d
-            try: json.loads(r.decode()); break
-            except: continue
-        except socket.timeout: break
-    s.close()
-    try: return json.loads(r.decode().strip())
-    except: return {'status': 'error', 'error': 'parse: ' + r.decode()[:200]}
+    return _send({'cmds': code_list}, 200)
 
 parser = argparse.ArgumentParser(description="Remove background from an image via GIMP MCP")
 parser.add_argument("--input",  required=True, help="Path to input image")

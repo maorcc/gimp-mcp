@@ -195,7 +195,7 @@ def new_canvas(
             f"Gimp.Drawable.edit_fill(_nc_layer, {fill_type})",
             "_nc_display = Gimp.Display.new(_nc_image)",
             "Gimp.displays_flush()",
-            f"print(_nc_image.get_id())",
+            "print(_nc_image.get_id())",
         ]
         conn = get_gimp_connection()
         result = conn.send_command("call_api", {

@@ -11,43 +11,44 @@ Loop:
 Usage:
     python bg_remove_iterative.py --input path/to/image.png --output-dir path/to/output/
 """
-import argparse, socket, json, base64, sys
+import argparse
+import socket
+import json
+import base64
+import sys
 
 # ── transport ───────────────────────────────────────────────────────────────
 
-def cmd(t, params=None):
-    s = socket.socket(); s.settimeout(30)
+def _send(msg, timeout, recv_size, parse_truncate):
+    s = socket.socket()
+    s.settimeout(timeout)
     s.connect(('127.0.0.1', 9877))
-    s.send(json.dumps({'type': t, 'params': params or {}}).encode() + b'\n')
+    s.send(json.dumps(msg).encode() + b'\n')
     r = b''
     while True:
         try:
-            d = s.recv(8192)
-            if not d: break
+            d = s.recv(recv_size)
+            if not d:
+                break
             r += d
-            try: json.loads(r.decode()); break
-            except: continue
-        except socket.timeout: break
+            try:
+                json.loads(r.decode())
+                break
+            except json.JSONDecodeError:
+                continue
+        except socket.timeout:
+            break
     s.close()
-    try: return json.loads(r.decode().strip())
-    except: return {'status': 'error', 'error': 'parse: ' + r.decode()[:120]}
+    try:
+        return json.loads(r.decode().strip())
+    except json.JSONDecodeError:
+        return {'status': 'error', 'error': 'parse: ' + r.decode()[:parse_truncate]}
+
+def cmd(t, params=None):
+    return _send({'type': t, 'params': params or {}}, 30, 8192, 120)
 
 def exec_gimp(code):
-    s = socket.socket(); s.settimeout(60)
-    s.connect(('127.0.0.1', 9877))
-    s.send(json.dumps({'cmds': [code]}).encode() + b'\n')
-    r = b''
-    while True:
-        try:
-            d = s.recv(65536)
-            if not d: break
-            r += d
-            try: json.loads(r.decode()); break
-            except: continue
-        except socket.timeout: break
-    s.close()
-    try: return json.loads(r.decode().strip())
-    except: return {'status': 'error', 'error': 'parse: ' + r.decode()[:200]}
+    return _send({'cmds': [code]}, 60, 65536, 200)
 
 def snapshot(label="", region=None, max_size=512):
     params = {'image_index': 0, 'max_width': max_size, 'max_height': max_size}
@@ -65,7 +66,8 @@ def snapshot(label="", region=None, max_size=512):
     return None
 
 def save_png(raw, path):
-    with open(path, 'wb') as f: f.write(raw)
+    with open(path, 'wb') as f:
+        f.write(raw)
     print(f"  Saved: {path}")
 
 # ── GIMP helpers (run inside GIMP) ──────────────────────────────────────────
@@ -201,7 +203,8 @@ print(f"  Init: {out.strip()}")
 # ── Step 1: snapshot original ───────────────────────────────────────────────
 print("\nStep 1: Original snapshot (before any removal)")
 raw = snapshot(label="original")
-if raw: save_png(raw, f'{OUT}/iter_00_original.png')
+if raw:
+    save_png(raw, f'{OUT}/iter_00_original.png')
 
 # ── Step 2: initial broad BG removal (edge-seed pass) ──────────────────────
 print("\nStep 2: Initial broad removal from image edges")
@@ -259,7 +262,8 @@ r = exec_gimp(INIT_REMOVE)
 out = (r.get('results') or [''])[0]
 print(f"  GIMP: {out.strip()}")
 raw = snapshot(label="after-init")
-if raw: save_png(raw, f'{OUT}/iter_01_init.png')
+if raw:
+    save_png(raw, f'{OUT}/iter_01_init.png')
 
 # ── Step 3: iterative refinement loop ───────────────────────────────────────
 print("\nStep 3: Iterative refinement")
@@ -404,7 +408,8 @@ for line in out.strip().splitlines():
     print(f"  GIMP: {line}")
 
 raw = snapshot(label="post-despeckle")
-if raw: save_png(raw, f'{OUT}/iter_despeckle.png')
+if raw:
+    save_png(raw, f'{OUT}/iter_despeckle.png')
 
 # Corner checks after despeckle
 for zone_name, region in [
@@ -413,12 +418,14 @@ for zone_name, region in [
     ("bot-left",  {'x':   0, 'y': 360, 'w': 150, 'h': 150}),
 ]:
     raw_z = snapshot(label=zone_name, region=region, max_size=256)
-    if raw_z: save_png(raw_z, f'{OUT}/despeckle_{zone_name}.png')
+    if raw_z:
+        save_png(raw_z, f'{OUT}/despeckle_{zone_name}.png')
 
 # ── Step 5: final snapshot + export ─────────────────────────────────────────
 print("\nStep 5: Final snapshot and export")
 raw = snapshot(label="final", max_size=512)
-if raw: save_png(raw, f'{OUT}/iter_final.png')
+if raw:
+    save_png(raw, f'{OUT}/iter_final.png')
 
 # Zoom into a few critical zones to verify cleanliness
 for zone_name, region in [
@@ -427,7 +434,8 @@ for zone_name, region in [
     ("bot-left",  {'x':   0, 'y': 360, 'w': 150, 'h': 150}),
 ]:
     raw_z = snapshot(label=zone_name, region=region, max_size=256)
-    if raw_z: save_png(raw_z, f'{OUT}/iter_final_{zone_name}.png')
+    if raw_z:
+        save_png(raw_z, f'{OUT}/iter_final_{zone_name}.png')
 
 final_out = f'{OUT}/result_clean_final.png'
 r = cmd('export_image', {

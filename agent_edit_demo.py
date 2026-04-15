@@ -10,44 +10,45 @@ Pipeline:
 Usage:
     python agent_edit_demo.py --input path/to/portrait.png --output-dir path/to/output/
 """
-import argparse, socket, json, base64, struct, zlib, sys
+import argparse
+import socket
+import json
+import base64
+import sys
 
 # ── low-level transport ─────────────────────────────────────────────────────
 
-def cmd(t, params=None):
-    s = socket.socket(); s.settimeout(30)
+def _send(msg, parse_truncate):
+    s = socket.socket()
+    s.settimeout(30)
     s.connect(('127.0.0.1', 9877))
-    s.send(json.dumps({'type': t, 'params': params or {}}).encode() + b'\n')
+    s.send(json.dumps(msg).encode() + b'\n')
     r = b''
     while True:
         try:
             d = s.recv(8192)
-            if not d: break
+            if not d:
+                break
             r += d
-            try: json.loads(r.decode()); break
-            except: continue
-        except socket.timeout: break
+            try:
+                json.loads(r.decode())
+                break
+            except json.JSONDecodeError:
+                continue
+        except socket.timeout:
+            break
     s.close()
-    try: return json.loads(r.decode().strip())
-    except: return {'status': 'error', 'error': 'parse: ' + r.decode()[:120]}
+    try:
+        return json.loads(r.decode().strip())
+    except json.JSONDecodeError:
+        return {'status': 'error', 'error': 'parse: ' + r.decode()[:parse_truncate]}
+
+def cmd(t, params=None):
+    return _send({'type': t, 'params': params or {}}, 120)
 
 def exec_gimp(code):
     """Run Python code inside GIMP via the cmds exec path."""
-    s = socket.socket(); s.settimeout(30)
-    s.connect(('127.0.0.1', 9877))
-    s.send(json.dumps({'cmds': [code]}).encode() + b'\n')
-    r = b''
-    while True:
-        try:
-            d = s.recv(8192)
-            if not d: break
-            r += d
-            try: json.loads(r.decode()); break
-            except: continue
-        except socket.timeout: break
-    s.close()
-    try: return json.loads(r.decode().strip())
-    except: return {'status': 'error', 'error': 'parse: ' + r.decode()[:200]}
+    return _send({'cmds': [code]}, 200)
 
 def snapshot(image_index=0, max_size=512, region=None, label=""):
     """Get visual state snapshot — core AI feedback loop mechanism."""
@@ -98,7 +99,8 @@ if r.get('status') != 'success':
 print()
 print("STEP 1: Snapshot BEFORE edits (original)")
 raw = snapshot(label="original")
-if raw: save_png(raw, f'{OUT}/snap_01_original.png')
+if raw:
+    save_png(raw, f'{OUT}/snap_01_original.png')
 
 # ── STEP 2: Remove background ───────────────────────────────────────────────
 print()
@@ -162,12 +164,14 @@ if 'BG_REMOVED' not in output:
 print()
 print("STEP 3: Snapshot AFTER background removal (agent verifies BG gone)")
 raw = snapshot(label="no-bg")
-if raw: save_png(raw, f'{OUT}/snap_02_nobg.png')
+if raw:
+    save_png(raw, f'{OUT}/snap_02_nobg.png')
 
 # Also zoom into face area for the agent to check
 print("  Zooming into face region for detail check...")
 raw_face = snapshot(region={'x': 140, 'y': 80, 'w': 240, 'h': 300}, label="face-region")
-if raw_face: save_png(raw_face, f'{OUT}/snap_03_face_detail.png')
+if raw_face:
+    save_png(raw_face, f'{OUT}/snap_03_face_detail.png')
 
 # ── STEP 4: Smile edit — paint smile over neutral mouth ─────────────────────
 print()
@@ -292,10 +296,12 @@ if 'SMILE_DONE' not in output:
 print()
 print("STEP 5: Snapshot AFTER smile paint (agent verifies expression change)")
 raw = snapshot(label="with-smile")
-if raw: save_png(raw, f'{OUT}/snap_04_smile.png')
+if raw:
+    save_png(raw, f'{OUT}/snap_04_smile.png')
 
 raw_mouth = snapshot(region={'x': 170, 'y': 310, 'w': 180, 'h': 100}, label="mouth-zoom")
-if raw_mouth: save_png(raw_mouth, f'{OUT}/snap_05_mouth_zoom.png')
+if raw_mouth:
+    save_png(raw_mouth, f'{OUT}/snap_05_mouth_zoom.png')
 
 # ── STEP 6: Export final ─────────────────────────────────────────────────────
 print()

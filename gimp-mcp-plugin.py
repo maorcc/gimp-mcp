@@ -121,7 +121,7 @@ class MCPPlugin(Gimp.PlugIn):
         if self.socket:
             try:
                 self.socket.close()
-            except:
+            except Exception:
                 pass
         if hasattr(self, '_glib_loop') and self._glib_loop:
             self._glib_loop.quit()
@@ -154,7 +154,7 @@ class MCPPlugin(Gimp.PlugIn):
             if self.socket:
                 try:
                     self.socket.close()
-                except:
+                except Exception:
                     pass
                 self.socket = None
             print("MCP server stopped")
@@ -448,7 +448,7 @@ class MCPPlugin(Gimp.PlugIn):
                     print(f"Executing commands: {a[1]}")
                     outputs = [exec_and_get_results(c, self.context) for c in a[1]]
                 else:
-                    print(f"no command to execute")
+                    print("no command to execute")
                 result = {
                     "status": "success",
                     "results": outputs
@@ -704,10 +704,10 @@ class MCPPlugin(Gimp.PlugIn):
                     # Try different property names that might exist
                     try:
                         export_config.set_property('drawable', drawable)
-                    except:
+                    except Exception:
                         try:
                             export_config.set_property('drawables', [drawable])
-                        except:
+                        except Exception:
                             # Some export procedures might not need drawable specification
                             pass
                     
@@ -844,7 +844,7 @@ class MCPPlugin(Gimp.PlugIn):
                     # Try to get layer mode if available
                     try:
                         layer_info["blend_mode"] = str(layer.get_mode())
-                    except:
+                    except Exception:
                         layer_info["blend_mode"] = "unknown"
                     
                     layers_info.append(layer_info)
@@ -967,7 +967,7 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.ImageBaseType.INDEXED: "Indexed"
             }
             return base_type_map.get(base_type, f"Unknown ({base_type})")
-        except:
+        except Exception:
             return str(base_type)
 
     def _precision_to_string(self, precision):
@@ -988,7 +988,7 @@ class MCPPlugin(Gimp.PlugIn):
                 750: "double-gamma" # Gimp.Precision.DOUBLE_GAMMA
             }
             return precision_map.get(int(precision), f"precision-{precision}")
-        except:
+        except Exception:
             return str(precision)
             
     def _get_layer_type_string(self, layer):
@@ -1053,7 +1053,7 @@ class MCPPlugin(Gimp.PlugIn):
                         version_string = str(Gimp.version_string())
                     elif hasattr(Gimp, 'get_version'):
                         version_string = str(Gimp.get_version())
-                except:
+                except Exception:
                     pass
                 
                 version_info["detected_version"] = version_string
@@ -1164,7 +1164,7 @@ class MCPPlugin(Gimp.PlugIn):
                                     "available": proc is not None,
                                     "type": str(type(proc)) if proc else None
                                 })
-                            except:
+                            except Exception:
                                 sample_procedures.append({
                                     "name": proc_name,
                                     "available": False,
@@ -1189,19 +1189,19 @@ class MCPPlugin(Gimp.PlugIn):
                 try:
                     fg_color = Gimp.context_get_foreground()
                     context_info["foreground_color"] = str(fg_color) if fg_color else None
-                except:
+                except Exception:
                     context_info["foreground_color"] = "unavailable"
                 
                 try:
                     bg_color = Gimp.context_get_background()
                     context_info["background_color"] = str(bg_color) if bg_color else None
-                except:
+                except Exception:
                     context_info["background_color"] = "unavailable"
                 
                 try:
                     brush_size = Gimp.context_get_brush_size()
                     context_info["brush_size"] = brush_size if brush_size else None
-                except:
+                except Exception:
                     context_info["brush_size"] = "unavailable"
                 
                 gimp_info["context"] = context_info
@@ -1233,10 +1233,10 @@ class MCPPlugin(Gimp.PlugIn):
                             # Already imported
                             capabilities["available_modules"].append({"name": module_name, "available": True})
                         elif module_name == 'gi.repository.Gegl':
-                            from gi.repository import Gegl
+                            from gi.repository import Gegl  # noqa: F401
                             capabilities["available_modules"].append({"name": module_name, "available": True})
                         elif module_name == 'gi.repository.Gio':
-                            from gi.repository import Gio
+                            from gi.repository import Gio  # noqa: F401
                             capabilities["available_modules"].append({"name": module_name, "available": True})
                         else:
                             __import__(module_name)
@@ -1367,7 +1367,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "radius": feather_radius,
                     "description": "Selection feathering state"
                 }
-            except Exception as feather_err:
+            except Exception:
                 context_state["feather_note"] = "Feather settings not available in context"
 
             # Get antialias setting
@@ -1377,7 +1377,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "enabled": antialias,
                     "description": "Antialiasing state for selections"
                 }
-            except Exception as aa_err:
+            except Exception:
                 context_state["antialias_note"] = "Antialias setting not available"
 
             return {
@@ -1542,7 +1542,7 @@ class MCPPlugin(Gimp.PlugIn):
 
     def _export_to_path(self, image, file_path, fmt, quality, flatten):
         """Export image to file_path in the given format. Returns file size in bytes."""
-        from gi.repository import Gio, Gegl
+        from gi.repository import Gio
         if flatten:
             image = image.duplicate()
             image.flatten()
@@ -1629,12 +1629,11 @@ class MCPPlugin(Gimp.PlugIn):
                 pass
         else:
             # Fallback: execute via exec context
-            import json as _json
             props_code = ", ".join(f'"{k}", {repr(v)}' for k, v in props.items())
             cmds = [
                 "from gi.repository import Gimp, Gegl",
-                f"_img = Gimp.get_images()[0]",
-                f"_d = (_img.get_selected_layers() or _img.get_layers() or [None])[0]",
+                "_img = Gimp.get_images()[0]",
+                "_d = (_img.get_selected_layers() or _img.get_layers() or [None])[0]",
                 f"_d.apply_drawable_filter_new('{op_name}', '', [{props_code}])",
                 "Gimp.displays_flush()",
             ]
@@ -1806,7 +1805,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _adjust_curves(self, params):
         """Adjust tonal curves."""
         try:
-            from gi.repository import Gegl
             PRESETS = {
                 "s_curve":  [0, 0, 64, 50, 192, 210, 255, 255],
                 "lighten":  [0, 0, 128, 180, 255, 255],
@@ -2130,7 +2128,7 @@ class MCPPlugin(Gimp.PlugIn):
             height        = int(params.get("height"))
             interpolation = params.get("interpolation", "cubic")
             image  = self._get_image(image_index)
-            interp = self._interp_from_string(interpolation)
+            self._interp_from_string(interpolation)
             image.undo_group_start()
             try:
                 image.scale(width, height)
@@ -2149,7 +2147,7 @@ class MCPPlugin(Gimp.PlugIn):
             max_height    = int(params.get("max_height"))
             interpolation = params.get("interpolation", "cubic")
             image  = self._get_image(image_index)
-            interp = self._interp_from_string(interpolation)
+            self._interp_from_string(interpolation)
             src_w  = image.get_width()
             src_h  = image.get_height()
             aspect = src_w / src_h
@@ -2951,7 +2949,6 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_background(Gegl.Color.new(color2))
 
                 Gegl.init(None)
-                buf = drawable.get_buffer()
                 shadow_buf = drawable.get_shadow_buffer()
                 graph = Gegl.Node()
 
@@ -3163,7 +3160,7 @@ class MCPPlugin(Gimp.PlugIn):
                             int(radius * 2 + abs(dx) * 2 + 4),
                             int(radius * 2 + abs(dy) * 2 + 4),
                         )
-                    except Exception as gegl_err:
+                    except Exception:
                         # Fallback: plug-in-iwarp if GEGL warp fails
                         proc = pdb.lookup_procedure("plug-in-iwarp")
                         if proc:

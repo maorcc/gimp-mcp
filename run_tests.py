@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-import socket, json, sys
+import socket
+import json
+import sys
 
 def cmd(t, params=None):
     s = socket.socket()
@@ -11,14 +13,21 @@ def cmd(t, params=None):
     while True:
         try:
             d = s.recv(8192)
-            if not d: break
+            if not d:
+                break
             r += d
-            try: json.loads(r.decode()); break
-            except: continue
-        except socket.timeout: break
+            try:
+                json.loads(r.decode())
+                break
+            except json.JSONDecodeError:
+                continue
+        except socket.timeout:
+            break
     s.close()
-    try: return json.loads(r.decode().strip())
-    except: return {'status': 'error', 'error': 'parse error: ' + r.decode()[:80]}
+    try:
+        return json.loads(r.decode().strip())
+    except json.JSONDecodeError:
+        return {'status': 'error', 'error': 'parse error: ' + r.decode()[:80]}
 
 passed = 0
 failed = 0
