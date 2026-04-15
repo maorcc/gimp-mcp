@@ -2716,7 +2716,7 @@ class MCPPlugin(Gimp.PlugIn):
             from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
-            fill_type   = params.get("fill_type", "foreground").lower()
+            fill_type   = (params.get("fill_type") or "foreground").lower()
             color_str   = params.get("color", "white")
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
