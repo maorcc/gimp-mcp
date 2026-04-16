@@ -7,7 +7,8 @@ name = "gimp-mcp"
 version = "0.1.0"
 description = "GIMP MCP integration for external control of GIMP 3.2"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "mcp",
@@ -16,6 +17,9 @@ dependencies = [
 
 [project.scripts]
 gimp-mcp-server = "gimp_mcp_server:main"
+
+[tool.setuptools]
+py-modules = ["gimp_mcp_server"]
 
 [tool.ruff.lint.per-file-ignores]
 "gimp-mcp-plugin.py" = ["E402"]
