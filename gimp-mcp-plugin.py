@@ -3697,7 +3697,7 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             image_index = int(params.get("image_index", 0))
             image = self._get_image(image_index)
-            displays = Gimp.display_list()
+            displays = Gimp.get_displays()
             for display in displays:
                 try:
                     if display.get_image().get_id() == image.get_id():
@@ -3805,7 +3805,7 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("file", gio_file)
                     proc.run(cfg)
             # Delete all displays for this image
-            for display in Gimp.display_list():
+            for display in Gimp.get_displays():
                 try:
                     if display.get_image().get_id() == image.get_id():
                         Gimp.Display.delete(display)
