@@ -5,10 +5,9 @@ Tests edge cases and parameter validation for get_image_bitmap()
 """
 
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 import sys
 import os
-import importlib.util
 
 # Add the project directory to the path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,7 +45,7 @@ class TestGimpBitmapEnhanced(unittest.TestCase):
         
         # Test with valid parameters - should not raise validation exception
         try:
-            result = self.plugin._get_current_image_bitmap({"region": valid_region})
+            self.plugin._get_current_image_bitmap({"region": valid_region})
             # In test environment, this will likely fail due to no real GIMP connection
             # But it should not fail due to parameter validation
         except Exception as e:
@@ -107,7 +106,7 @@ class TestGimpBitmapEnhanced(unittest.TestCase):
         
         # This should trigger a scaling ratio warning
         with patch('builtins.print') as mock_print:
-            result = self.plugin._get_current_image_bitmap(large_scaling_params)
+            self.plugin._get_current_image_bitmap(large_scaling_params)
             # Check that warning was printed about large scaling
             warning_calls = [call for call in mock_print.call_args_list 
                            if 'scaling operation detected' in str(call)]
@@ -120,8 +119,8 @@ class TestGimpBitmapEnhanced(unittest.TestCase):
         max_width, max_height = 800, 800         # Square bounds
         
         aspect_ratio = image_width / image_height  # 1.777...
-        max_aspect_ratio = max_width / max_height  # 1.0
-        
+        # max_aspect_ratio = max_width / max_height is 1.0
+
         # Width should be limiting factor (aspect_ratio > max_aspect_ratio)
         expected_width = max_width  # 800
         expected_height = int(max_width / aspect_ratio)  # 450
@@ -134,8 +133,8 @@ class TestGimpBitmapEnhanced(unittest.TestCase):
         max_width, max_height = 1000, 600     # Landscape bounds
         
         aspect_ratio = image_width / image_height  # 0.75
-        max_aspect_ratio = max_width / max_height  # 1.667
-        
+        # max_aspect_ratio = max_width / max_height is 1.667
+
         # Height should be limiting factor (aspect_ratio < max_aspect_ratio)
         expected_height = max_height  # 600
         expected_width = int(max_height * aspect_ratio)  # 450
@@ -202,8 +201,8 @@ class TestGimpBitmapEnhanced(unittest.TestCase):
                             with patch('builtins.open', create=True) as mock_open:
                                 mock_open.return_value.__enter__.return_value.read.return_value = b'mock_png_data'
                                 
-                                result = self.plugin._get_current_image_bitmap({"region": mixed_region})
-                                
+                                self.plugin._get_current_image_bitmap({"region": mixed_region})
+
                                 # Should succeed and use region scaling
                                 # Note: In test environment, this may fail gracefully
                                 # The important thing is no parameter validation errors

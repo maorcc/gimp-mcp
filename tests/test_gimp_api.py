@@ -2,7 +2,6 @@
 """Test GIMP API compatibility and method availability"""
 
 import unittest
-from unittest.mock import Mock, patch
 from test_fixtures import setup_gimp_mocks, cleanup_gimp_mocks, create_mock_plugin
 
 class TestGimpApiCompatibility(unittest.TestCase):
