@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This is a GIMP MCP (Model Context Protocol) integration that enables external control of GIMP 3.0 through Claude Desktop and other MCP clients. The system consists of two main components:
+This is a GIMP MCP (Model Context Protocol) integration that enables external control of GIMP 3.2 through Claude Desktop and other MCP clients. The system consists of two main components:
 
-1. **GIMP Plugin** (`gimp-mcp-plugin.py`): A GIMP 3.0 plugin that starts a socket server inside GIMP
+1. **GIMP Plugin** (`gimp-mcp-plugin.py`): A GIMP 3.2 plugin that starts a socket server inside GIMP
 2. **MCP Server** (`gimp-mcp-server.py`): An MCP server that connects to the GIMP plugin and exposes GIMP functionality
 
 ## Architecture
@@ -14,7 +14,7 @@ This is a GIMP MCP (Model Context Protocol) integration that enables external co
 The system uses a client-server architecture:
 - GIMP Plugin creates a socket server (localhost:9877) that accepts Python-Fu commands
 - MCP Server connects to this socket and exposes a `call_api` tool for MCP clients
-- Commands are executed in GIMP's Python-Fu environment with access to the full GIMP 3.0 API
+- Commands are executed in GIMP's Python-Fu environment with access to the full GIMP 3.2 API
 
 ## Installation & Setup
 
@@ -60,7 +60,7 @@ The main interface is the `call_api` tool with parameters:
 }
 ```
 
-### GIMP 3.0 API Key Points
+### GIMP 3.2 API Key Points
 
 - Use `Gimp.get_images()` instead of deprecated `Gimp.list_images()`
 - Access layers via `image.get_layers()` instead of `Gimp.get_active_layer()`
@@ -103,9 +103,9 @@ Gimp.displays_flush()
 ## Important Notes
 
 - Commands execute in a persistent Python context - imports and variables persist between calls
-- GIMP 3.0 API differs significantly from 2.x - consult https://developer.gimp.org/api/3.0/libgimp/
+- GIMP 3.2 API differs significantly from 2.x - consult https://developer.gimp.org/api/3.0/libgimp/
 - Always verify API calls work before building complex operations
-- The `gimpfu` module is not available in GIMP 3.0
+- The `gimpfu` module is not available in GIMP 3.2
 - Use proper error handling as socket connections can fail
 
 ## File Structure

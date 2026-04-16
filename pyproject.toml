@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gimp-mcp"
 version = "0.1.0"
-description = "GIMP MCP integration for external control of GIMP 3.0"
+description = "GIMP MCP integration for external control of GIMP 3.2"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
