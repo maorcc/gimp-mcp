@@ -57,6 +57,11 @@ class MCPPlugin(Gimp.PlugIn):
         exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
 
+    def do_set_i18n(self, procname):
+        # Plugin has no translations; tell GIMP so it stops logging
+        # "catalog directory does not exist" for every registered procedure.
+        return False
+
     def do_query_procedures(self):
         """Register the plugin procedures."""
         return ["plug-in-mcp-server", "plug-in-mcp-check", "plug-in-mcp-restart"]
