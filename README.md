@@ -8,8 +8,9 @@
 
 ## Demo
 
-https://github.com/maorcc/gimp-mcp/raw/main/docs/demo.mp4
+![GIMP MCP in action — AI agent driving GIMP through natural language](docs/mcpInAction.gif)
 
+Full demo (with audio): https://github.com/maorcc/gimp-mcp/raw/main/docs/demo.mp4
 
 *AI agent using GIMP MCP to remove a background, edit a character's expression, and verify results — all through natural language via Claude*
 
