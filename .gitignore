@@ -6,3 +6,9 @@
 
 # macOS
 .DS_Store
+
+# Claude Code working directory
+/.claude/
+
+# Generated test artifacts
+/tests/continuous_edit_test/output/
