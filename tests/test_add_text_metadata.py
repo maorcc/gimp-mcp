@@ -156,6 +156,10 @@ def call_add_text(target_index):
 def assert_real_metadata(results):
     """Verify ``add_text`` returned real values, not issue #15 placeholders.
 
+    ``layer_id`` must be **strictly positive**. A real ``Gimp.Drawable``
+    id is never 0, so accepting 0 would let a default-int return slip
+    through the check just as the old ``-1`` sentinel did.
+
     Returns ``(layer_id, layer_name, text_width, text_height)`` on
     success; aborts via :func:`fail` on any placeholder.
     """
@@ -164,7 +168,7 @@ def assert_real_metadata(results):
     text_w     = results.get('text_width')
     text_h     = results.get('text_height')
 
-    if not isinstance(layer_id, int) or layer_id < 0:
+    if not isinstance(layer_id, int) or layer_id <= 0:
         fail(f"layer_id is placeholder: {layer_id!r} (expected positive int)")
     if not layer_name or layer_name == 'unknown':
         fail(f"layer_name is placeholder: {layer_name!r}")
@@ -178,9 +182,15 @@ def assert_real_metadata(results):
 def assert_chainable(target_index, layer_id, layer_name):
     """Verify the returned handle is visible to ``list_layers``.
 
+    Requires a single listed layer whose ``id`` **and** ``name`` both
+    match the metadata we got back. Matching on either-or would happily
+    succeed against an unrelated layer that happens to share a
+    (non-unique) name, which could mask a real bug where the returned
+    ``id`` does not resolve to the new text layer.
+
     The whole point of issue #15 is that clients must be able to chain
-    further operations on the new text layer. If ``list_layers`` can find
-    a layer matching the returned id/name, the handle is usable.
+    further operations on the new text layer — only a full id+name
+    match actually proves that.
     """
     ll = cmd('list_layers', {'image_index': target_index})
     if ll.get('status') != 'success':
@@ -188,7 +198,7 @@ def assert_chainable(target_index, layer_id, layer_name):
 
     layers = (ll.get('results') or {}).get('layers') or []
     match  = next((lyr for lyr in layers
-                   if lyr.get('id') == layer_id or lyr.get('name') == layer_name),
+                   if lyr.get('id') == layer_id and lyr.get('name') == layer_name),
                   None)
     if match is None:
         fail(f"returned layer (id={layer_id}, name={layer_name!r}) not in list_layers: {layers}")
