@@ -3046,21 +3046,36 @@ class MCPPlugin(Gimp.PlugIn):
                             font_obj = flist[0]
 
                 # Path 1 — native GIMP 3 API: Gimp.TextLayer.new
+                # IMPORTANT: once insert_layer has succeeded, commit to this
+                # layer immediately. Post-create steps (set_offsets, color)
+                # are best-effort — a failure there must not cause the PDB
+                # fallback below to run and insert a *second* text layer.
                 if font_obj is not None and hasattr(Gimp, "TextLayer"):
+                    tl = None
                     try:
                         tl = Gimp.TextLayer.new(image, text_str, font_obj, float(size), Gimp.Unit.pixel())
-                        if tl is not None:
+                    except Exception:
+                        tl = None
+                    if tl is not None:
+                        try:
                             image.insert_layer(tl, None, 0)
-                            tl.set_offsets(x, y)
+                            text_layer = tl   # committed — no fallback past here
+                        except Exception:
+                            tl = None
+                    if text_layer is not None:
+                        try:
+                            text_layer.set_offsets(x, y)
+                        except Exception:
+                            pass
+                        try:
                             cproc = pdb.lookup_procedure("gimp-text-layer-set-color")
                             if cproc:
                                 ccfg = cproc.create_config()
-                                ccfg.set_property("layer", tl)
+                                ccfg.set_property("layer", text_layer)
                                 ccfg.set_property("color", Gegl.Color.new(color_str))
                                 cproc.run(ccfg)
-                            text_layer = tl
-                    except Exception:
-                        text_layer = None
+                        except Exception:
+                            pass
 
                 # Path 2 — PDB gimp-text-font (GIMP 3.x; takes GimpFont object)
                 if text_layer is None and font_obj is not None:
