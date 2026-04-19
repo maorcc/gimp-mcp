@@ -452,4 +452,10 @@ uv sync
 uv run pre-commit install
 ```
 
-After this, `ruff` checks staged files on each `git commit`. The same check runs in CI, so the hook is just a fast local safety net.
+After this, `ruff` checks staged files on each `git commit` (with `--fix` applied automatically). The same check runs in CI, so the hook is just a fast local safety net.
+
+To bump the pinned hook versions later:
+
+```bash
+uv run pre-commit autoupdate
+```
