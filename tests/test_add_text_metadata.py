@@ -73,19 +73,35 @@ def main():
     if r.get('status') != 'success':
         fail(f"open_image: {r.get('error', '')}")
 
-    # Use image_index 0 — this will be the most recently opened image in
-    # many impls, but we check list_images to be safe.
+    # open_image returns the new image_id at the top level or under
+    # results — this is the authoritative handle we must match against
+    # list_images. In a persistent GIMP session, repeated runs can leave
+    # several winry_joy.png images open; picking by path suffix alone
+    # would happily target a stale one, so prefer image_id and only
+    # fall back to path matching if image_id is missing.
+    opened_id = r.get('image_id')
+    if opened_id is None:
+        opened_id = (r.get('results') or {}).get('image_id')
+
     li = cmd('list_images', {})
     images = (li.get('results') or {}).get('images') or []
     if not images:
         fail("no images after open_image")
-    # Prefer the image whose path matches
-    target_index = 0
-    for i, info in enumerate(images):
-        if isinstance(info, dict) and info.get('file_path', '').endswith('winry_joy.png'):
-            target_index = i
-            break
-    print(f"Using image_index={target_index}")
+
+    target_index = None
+    if opened_id is not None:
+        for i, info in enumerate(images):
+            if isinstance(info, dict) and info.get('image_id') == opened_id:
+                target_index = i
+                break
+    if target_index is None:
+        for i, info in enumerate(images):
+            if isinstance(info, dict) and info.get('file_path', '').endswith('winry_joy.png'):
+                target_index = i
+                break
+    if target_index is None:
+        target_index = 0
+    print(f"Using image_index={target_index} (image_id={opened_id})")
 
     print("Calling add_text with real parameters...")
     r = cmd('add_text', {
