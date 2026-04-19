@@ -2994,7 +2994,13 @@ class MCPPlugin(Gimp.PlugIn):
     # =========================================================================
 
     def _add_text(self, params):
-        """Add a text layer."""
+        """Add a text layer.
+
+        Returns real layer metadata (id, name, width, height) for the newly
+        created text layer so clients can chain follow-up operations by name
+        or id. Never returns placeholder values on success — if the layer
+        cannot be introspected, the call reports status=error.
+        """
         try:
             from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
@@ -3005,39 +3011,98 @@ class MCPPlugin(Gimp.PlugIn):
             size        = int(params.get("size", 24))
             color_str   = params.get("color", "black")
             image = self._get_image(image_index)
+
+            # Snapshot layer IDs before creation so we can identify the new
+            # text layer even when PDB return-value unpacking varies across
+            # GIMP 3.x point releases.
+            before_ids = {lyr.get_id() for lyr in image.get_layers()}
+
+            text_layer = None
             image.undo_group_start()
             Gimp.context_push()
             try:
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
-                # Gimp.text_fontname() removed in GIMP 3 — use PDB procedure
                 pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-text-fontname")
-                text_layer = None
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("image",     image)
-                    cfg.set_property("drawable",  None)
-                    cfg.set_property("x",         float(x))
-                    cfg.set_property("y",         float(y))
-                    cfg.set_property("text",      text_str)
-                    cfg.set_property("border",    0)
-                    cfg.set_property("antialias", True)
-                    cfg.set_property("size",      float(size))
-                    cfg.set_property("fontname",  font)
-                    result = proc.run(cfg)
-                    if result:
-                        text_layer = result.index(1)
+
+                # Resolve font name → Gimp.Font object, with fallbacks for
+                # legacy aliases ("Sans" was the GIMP 2.x default; in 3.2 the
+                # matching font is "Sans-serif"). If nothing matches, fall
+                # back to the first available font so add_text never fails
+                # purely because a font name is stale.
+                font_obj = None
+                if hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name"):
+                    font_obj = Gimp.Font.get_by_name(font)
+                    if font_obj is None:
+                        for alias in (font + "-serif", font + " Regular",
+                                      font.replace(" ", "-"),
+                                      "Sans-serif", "Serif", "Monospace"):
+                            font_obj = Gimp.Font.get_by_name(alias)
+                            if font_obj is not None:
+                                break
+                    if font_obj is None:
+                        raw = Gimp.fonts_get_list("")
+                        flist = list(raw[1]) if isinstance(raw, tuple) and len(raw) > 1 else list(raw)
+                        if flist:
+                            font_obj = flist[0]
+
+                # Path 1 — native GIMP 3 API: Gimp.TextLayer.new
+                if font_obj is not None and hasattr(Gimp, "TextLayer"):
+                    try:
+                        tl = Gimp.TextLayer.new(image, text_str, font_obj, float(size), Gimp.Unit.pixel())
+                        if tl is not None:
+                            image.insert_layer(tl, None, 0)
+                            tl.set_offsets(x, y)
+                            cproc = pdb.lookup_procedure("gimp-text-layer-set-color")
+                            if cproc:
+                                ccfg = cproc.create_config()
+                                ccfg.set_property("layer", tl)
+                                ccfg.set_property("color", Gegl.Color.new(color_str))
+                                cproc.run(ccfg)
+                            text_layer = tl
+                    except Exception:
+                        text_layer = None
+
+                # Path 2 — PDB gimp-text-font (GIMP 3.x; takes GimpFont object)
+                if text_layer is None and font_obj is not None:
+                    proc = pdb.lookup_procedure("gimp-text-font")
+                    if proc:
+                        cfg = proc.create_config()
+                        cfg.set_property("image",     image)
+                        cfg.set_property("drawable",  None)
+                        cfg.set_property("x",         float(x))
+                        cfg.set_property("y",         float(y))
+                        cfg.set_property("text",      text_str)
+                        cfg.set_property("border",    0)
+                        cfg.set_property("antialias", True)
+                        cfg.set_property("size",      float(size))
+                        cfg.set_property("font",      font_obj)
+                        proc.run(cfg)
             finally:
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()
+
+            # If the fallback path ran (or native path returned None), locate
+            # the newly inserted layer by diffing against the pre-snapshot.
+            if text_layer is None:
+                for lyr in image.get_layers():
+                    if lyr.get_id() not in before_ids:
+                        text_layer = lyr
+                        break
+
+            if text_layer is None:
+                return {
+                    "status": "error",
+                    "error":  "add_text: no text layer was created (no PDB procedure succeeded)",
+                }
+
             return {
                 "status": "success",
                 "results": {
-                    "layer_name":  text_layer.get_name() if text_layer else "unknown",
-                    "layer_id":    text_layer.get_id()   if text_layer else -1,
-                    "text_width":  text_layer.get_width()  if text_layer else 0,
-                    "text_height": text_layer.get_height() if text_layer else 0,
+                    "layer_name":  text_layer.get_name(),
+                    "layer_id":    text_layer.get_id(),
+                    "text_width":  text_layer.get_width(),
+                    "text_height": text_layer.get_height(),
                     "position":    [x, y],
                 }
             }
