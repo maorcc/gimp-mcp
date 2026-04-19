@@ -207,15 +207,42 @@ def assert_chainable(target_index, layer_id, layer_name):
 
 # ── entry point ───────────────────────────────────────────────────────────
 
-def main():
-    target_index, _opened_id = open_test_image()
-    results                  = call_add_text(target_index)
-    layer_id, layer_name, w, h = assert_real_metadata(results)
-    match                    = assert_chainable(target_index, layer_id, layer_name)
+def close_image_if_open(target_index):
+    """Close the test image to avoid polluting the persistent GIMP session.
 
-    print(f"PASS add_text: layer_id={layer_id} name={layer_name!r} size={w}x{h}")
-    print(f"PASS list_layers confirms layer is chainable: {match}")
-    sys.exit(0)
+    Safe to call even if image opening failed — ``target_index`` may be
+    ``None``, in which case we skip cleanup.
+
+    Cleanup is best-effort: we issue the ``close_image`` command and log
+    any non-success response to stderr without raising. That way a
+    server-side close bug (GIMP 3.x display-enumeration quirks etc.)
+    surfaces in the test output for follow-up, but does not mask the
+    actual test result that triggered the ``finally``.
+    """
+    if target_index is None:
+        return
+    try:
+        r = cmd('close_image', {'image_index': target_index, 'save_first': False})
+        if r.get('status') != 'success':
+            print(f"  (cleanup) close_image non-success: {r.get('error', '')[:200]}",
+                  file=sys.stderr)
+    except Exception as e:
+        print(f"  (cleanup) close_image transport error: {e}", file=sys.stderr)
+
+
+def main():
+    target_index = None
+    try:
+        target_index, _opened_id = open_test_image()
+        results                  = call_add_text(target_index)
+        layer_id, layer_name, w, h = assert_real_metadata(results)
+        match                    = assert_chainable(target_index, layer_id, layer_name)
+
+        print(f"PASS add_text: layer_id={layer_id} name={layer_name!r} size={w}x{h}")
+        print(f"PASS list_layers confirms layer is chainable: {match}")
+        sys.exit(0)
+    finally:
+        close_image_if_open(target_index)
 
 
 if __name__ == '__main__':
