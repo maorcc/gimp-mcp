@@ -442,3 +442,20 @@ GIMP_MCP_DEBUG=1 uv run --directory /path/to/gimp-mcp gimp_mcp_server.py
 ## Contributing
 
 Contributions are welcome — bug fixes, new tools, documentation, or example scripts. Open a PR or issue on GitHub.
+
+### Development Setup
+
+Install dev dependencies and activate the pre-commit hook so `ruff` runs on every commit:
+
+```bash
+uv sync
+uv run pre-commit install
+```
+
+After this, `ruff` checks staged files on each `git commit` (with `--fix` applied automatically). The same check runs in CI, so the hook is just a fast local safety net.
+
+To bump the pinned hook versions later:
+
+```bash
+uv run pre-commit autoupdate
+```

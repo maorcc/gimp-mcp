@@ -23,3 +23,8 @@ py-modules = ["gimp_mcp_server"]
 
 [tool.ruff.lint.per-file-ignores]
 "gimp-mcp-plugin.py" = ["E402"]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+]
