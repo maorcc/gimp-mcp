@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
 """Regression test for issue #15 — add_text must return real layer metadata.
 
-Before the fix, ``_add_text`` returned placeholder values when PDB
-return-value unpacking failed::
-
-    {'layer_name': 'unknown', 'layer_id': -1, 'text_width': 0, ...}
-
-while ``status`` was still ``'success'``, so any follow-up op targeting
-the layer by id/name would fail silently.
-
-What this test proves
----------------------
-
-1. ``add_text`` responds with ``status == 'success'``.
-2. The returned ``layer_id``/``layer_name``/``text_width``/``text_height``
-   are **real values**, not the old ``-1`` / ``'unknown'`` / ``0``
-   sentinels.
-3. ``list_layers`` can see a layer that matches the returned id *and*
-   name — proving the handle is actually chainable, which is the whole
-   point of issue #15.
-
-The test reuses the character portrait already committed for the
-continuous-edit test (``tests/continuous_edit_test/files/winry_joy.png``)
-so no new fixture is needed.
-
-Requirements: GIMP MCP plugin must be running on ``localhost:9877``.
+Requires the GIMP MCP plugin running on localhost:9877.
 Exits 0 on pass, 1 on fail.
 """
 import json
@@ -40,11 +17,7 @@ TEST_IMAGE = os.path.join(HERE, 'continuous_edit_test', 'files', 'winry_joy.png'
 # ── transport ─────────────────────────────────────────────────────────────
 
 def send(msg, timeout=30):
-    """Send one JSON message to the GIMP MCP socket and return the reply.
-
-    The plugin emits newline-delimited JSON; we keep reading until
-    ``json.loads`` succeeds on the accumulated buffer.
-    """
+    """Send one JSON message to the MCP socket and return the reply."""
     s = socket.socket()
     s.settimeout(timeout)
     s.connect((HOST, PORT))
@@ -71,12 +44,12 @@ def send(msg, timeout=30):
 
 
 def cmd(t, params=None):
-    """Convenience wrapper: send a ``{type, params}`` command."""
+    """Send a {type, params} command."""
     return send({'type': t, 'params': params or {}})
 
 
 def fail(msg):
-    """Abort the test with a clear failure banner on stderr."""
+    """Abort with a failure banner on stderr."""
     print(f"FAIL: {msg}", file=sys.stderr)
     sys.exit(1)
 
@@ -84,14 +57,7 @@ def fail(msg):
 # ── test steps ────────────────────────────────────────────────────────────
 
 def open_test_image():
-    """Open the test image and return ``(target_index, opened_id)``.
-
-    Uses the ``image_id`` returned by ``open_image`` to find the matching
-    entry in ``list_images``. This is the authoritative handle — matching
-    by path suffix alone can pick a stale duplicate in a persistent GIMP
-    session. Path-suffix matching is kept as a fallback only for the
-    case where ``image_id`` is missing from the ``open_image`` response.
-    """
+    """Open the test image and return (target_index, opened_id)."""
     if not os.path.exists(TEST_IMAGE):
         fail(f"test image missing: {TEST_IMAGE}")
 
@@ -107,6 +73,8 @@ def open_test_image():
     if not images:
         fail("no images after open_image")
 
+    # Match by image_id (authoritative) — path-suffix can hit a stale
+    # duplicate in a persistent GIMP session.
     target_index = None
     if opened_id is not None:
         target_index = _find_index_by(images, 'image_id', opened_id)
@@ -120,7 +88,6 @@ def open_test_image():
 
 
 def _find_index_by(images, key, value):
-    """Return the index of the image whose ``key`` equals ``value``, or None."""
     for i, info in enumerate(images):
         if isinstance(info, dict) and info.get(key) == value:
             return i
@@ -128,7 +95,6 @@ def _find_index_by(images, key, value):
 
 
 def _find_index_by_suffix(images, suffix):
-    """Return the index of the image whose ``file_path`` ends with ``suffix``."""
     for i, info in enumerate(images):
         if isinstance(info, dict) and info.get('file_path', '').endswith(suffix):
             return i
@@ -136,7 +102,7 @@ def _find_index_by_suffix(images, suffix):
 
 
 def call_add_text(target_index):
-    """Invoke ``add_text`` with concrete parameters and return the response."""
+    """Invoke add_text and return the response results dict."""
     print("Calling add_text with real parameters...")
     r = cmd('add_text', {
         'image_index': target_index,
@@ -154,20 +120,14 @@ def call_add_text(target_index):
 
 
 def assert_real_metadata(results):
-    """Verify ``add_text`` returned real values, not issue #15 placeholders.
-
-    ``layer_id`` must be **strictly positive**. A real ``Gimp.Drawable``
-    id is never 0, so accepting 0 would let a default-int return slip
-    through the check just as the old ``-1`` sentinel did.
-
-    Returns ``(layer_id, layer_name, text_width, text_height)`` on
-    success; aborts via :func:`fail` on any placeholder.
-    """
+    """Verify add_text returned real values, not placeholders."""
     layer_id   = results.get('layer_id')
     layer_name = results.get('layer_name')
     text_w     = results.get('text_width')
     text_h     = results.get('text_height')
 
+    # layer_id must be strictly positive — a real Gimp.Drawable id is never 0,
+    # so accepting 0 would let a default-int slip through like the old -1 did.
     if not isinstance(layer_id, int) or layer_id <= 0:
         fail(f"layer_id is placeholder: {layer_id!r} (expected positive int)")
     if not layer_name or layer_name == 'unknown':
@@ -180,22 +140,13 @@ def assert_real_metadata(results):
 
 
 def assert_chainable(target_index, layer_id, layer_name):
-    """Verify the returned handle is visible to ``list_layers``.
-
-    Requires a single listed layer whose ``id`` **and** ``name`` both
-    match the metadata we got back. Matching on either-or would happily
-    succeed against an unrelated layer that happens to share a
-    (non-unique) name, which could mask a real bug where the returned
-    ``id`` does not resolve to the new text layer.
-
-    The whole point of issue #15 is that clients must be able to chain
-    further operations on the new text layer — only a full id+name
-    match actually proves that.
-    """
+    """Verify the returned handle is visible to list_layers."""
     ll = cmd('list_layers', {'image_index': target_index})
     if ll.get('status') != 'success':
         fail(f"list_layers failed: {ll.get('error', '')}")
 
+    # Require both id AND name to match — id-or-name could pass against an
+    # unrelated layer that happens to share a non-unique name.
     layers = (ll.get('results') or {}).get('layers') or []
     match  = next((lyr for lyr in layers
                    if lyr.get('id') == layer_id and lyr.get('name') == layer_name),
@@ -208,17 +159,7 @@ def assert_chainable(target_index, layer_id, layer_name):
 # ── entry point ───────────────────────────────────────────────────────────
 
 def close_image_if_open(target_index):
-    """Close the test image to avoid polluting the persistent GIMP session.
-
-    Safe to call even if image opening failed — ``target_index`` may be
-    ``None``, in which case we skip cleanup.
-
-    Cleanup is best-effort: we issue the ``close_image`` command and log
-    any non-success response to stderr without raising. That way a
-    server-side close bug (GIMP 3.x display-enumeration quirks etc.)
-    surfaces in the test output for follow-up, but does not mask the
-    actual test result that triggered the ``finally``.
-    """
+    """Close the test image so a persistent GIMP session stays clean."""
     if target_index is None:
         return
     try:

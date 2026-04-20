@@ -2993,40 +2993,8 @@ class MCPPlugin(Gimp.PlugIn):
     # CATEGORY 7 — Text
     # =========================================================================
 
-    # ── add_text helpers ─────────────────────────────────────────────────
-    #
-    # _add_text is split into small helpers below so each stage of text
-    # layer creation can be read, reviewed, and reasoned about in isolation.
-    # The flow is:
-    #
-    #     resolve font  ──▶  try native API  ──▶  try PDB fallback
-    #                                │                    │
-    #                                └── layer committed ─┴──▶  find by diff
-    #                                                               │
-    #                                                               ▼
-    #                                                     return metadata
-    #
-    # ─────────────────────────────────────────────────────────────────────
-
     def _resolve_font(self, name):
-        """Return a ``Gimp.Font`` matching ``name``, or a sensible default.
-
-        Font resolution in GIMP 3.2 is exact-match by display name and does
-        not accept legacy GIMP 2.x aliases. ``"Sans"`` — the old default —
-        no longer matches anything (the 3.2 equivalent is ``"Sans-serif"``).
-
-        To keep ``add_text`` robust against stale font names we try, in
-        order:
-
-        1. Exact match on ``name``.
-        2. Common aliases derived from ``name`` (``"<name>-serif"``,
-           ``"<name> Regular"``, hyphenated).
-        3. Well-known GIMP 3.2 fonts (``"Sans-serif"``, ``"Serif"``,
-           ``"Monospace"``).
-        4. The first font reported by ``Gimp.fonts_get_list("")``.
-
-        Returns ``None`` only if GIMP has no fonts loaded at all.
-        """
+        """Resolve a font name to a Gimp.Font."""
         if not (hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name")):
             return None
 
@@ -3034,6 +3002,8 @@ class MCPPlugin(Gimp.PlugIn):
         if font_obj is not None:
             return font_obj
 
+        # GIMP 3.2 dropped GIMP 2.x aliases; e.g. "Sans" no longer resolves,
+        # the 3.2 equivalent is "Sans-serif".
         for alias in (name + "-serif", name + " Regular",
                       name.replace(" ", "-"),
                       "Sans-serif", "Serif", "Monospace"):
@@ -3046,18 +3016,7 @@ class MCPPlugin(Gimp.PlugIn):
         return flist[0] if flist else None
 
     def _create_text_layer_native(self, image, text, font_obj, size, x, y, color_str):
-        """Create a text layer via the native GIMP 3 API.
-
-        Uses ``Gimp.TextLayer.new`` + ``image.insert_layer`` + offsets +
-        a ``gimp-text-layer-set-color`` PDB call for styling.
-
-        Returns the inserted layer, or ``None`` if creation failed before
-        ``insert_layer`` succeeded. Once the layer is inserted into the
-        image it is considered committed; post-insert failures (offset,
-        color) are swallowed rather than propagated, so the caller never
-        sees ``None`` for a layer that is actually in the image — which
-        would otherwise cause the PDB fallback to add a *second* layer.
-        """
+        """Create a text layer via Gimp.TextLayer.new."""
         from gi.repository import Gegl
         if not hasattr(Gimp, "TextLayer"):
             return None
@@ -3074,7 +3033,9 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception:
             return None
 
-        # Layer is committed — style is best-effort from here on.
+        # Layer is now in the image; swallow offset/color failures so the
+        # caller does not fall through to the PDB fallback and insert a
+        # second layer.
         try:
             tl.set_offsets(x, y)
         except Exception:
@@ -3092,14 +3053,7 @@ class MCPPlugin(Gimp.PlugIn):
         return tl
 
     def _create_text_layer_pdb(self, image, text, font_obj, size, x, y):
-        """Create a text layer via the ``gimp-text-font`` PDB procedure.
-
-        ``gimp-text-font`` is the GIMP 3.x replacement for the GIMP 2.x
-        ``gimp-text-fontname``. It takes a ``GimpFont`` object (not a
-        string) and inserts a new text layer into ``image``. The layer
-        handle is not returned directly; callers locate it via a
-        before/after layer-id diff.
-        """
+        """Create a text layer via the gimp-text-font PDB procedure."""
         proc = Gimp.get_pdb().lookup_procedure("gimp-text-font")
         if proc is None:
             return
@@ -3116,35 +3070,14 @@ class MCPPlugin(Gimp.PlugIn):
         proc.run(cfg)
 
     def _find_new_layer(self, image, before_ids):
-        """Return the first layer in ``image`` whose id is not in ``before_ids``.
-
-        Used to locate a layer inserted by a PDB procedure whose return
-        tuple shape varies across GIMP 3.x point releases.
-        """
+        """Return the first layer whose id is not in before_ids."""
         for lyr in image.get_layers():
             if lyr.get_id() not in before_ids:
                 return lyr
         return None
 
     def _add_text(self, params):
-        """Add a text layer and return its real metadata.
-
-        Flow (see the helpers above for details):
-
-            1. Resolve the requested font name to a ``Gimp.Font``.
-            2. Try ``Gimp.TextLayer.new`` (native, preferred).
-            3. If the native path did not commit a layer, try the
-               ``gimp-text-font`` PDB procedure.
-            4. If neither path returned a handle directly, find the new
-               layer via a before/after id diff.
-            5. Return ``layer_id``, ``layer_name``, ``text_width``,
-               ``text_height`` for the new layer.
-
-        Returns ``status=error`` — never success with placeholder values —
-        when no text layer was actually created. This is the core guard
-        for issue #15: clients must be able to chain subsequent
-        operations on the returned handle.
-        """
+        """Add a text layer."""
         try:
             from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
@@ -3178,6 +3111,8 @@ class MCPPlugin(Gimp.PlugIn):
             if text_layer is None:
                 text_layer = self._find_new_layer(image, before_ids)
             if text_layer is None:
+                # Issue #15: return an explicit error instead of a placeholder
+                # success so clients never chain ops on a fake handle.
                 return {
                     "status": "error",
                     "error":  "add_text: no text layer was created (no PDB procedure succeeded)",
