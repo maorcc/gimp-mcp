@@ -165,8 +165,8 @@ def close_image_if_open(target_index):
     try:
         r = cmd('close_image', {'image_index': target_index, 'save_first': False})
         if r.get('status') != 'success':
-            print(f"  (cleanup) close_image non-success: {r.get('error', '')[:200]}",
-                  file=sys.stderr)
+            err = str(r.get('error') or '')[:200]
+            print(f"  (cleanup) close_image non-success: {err}", file=sys.stderr)
     except Exception as e:
         print(f"  (cleanup) close_image transport error: {e}", file=sys.stderr)
 
