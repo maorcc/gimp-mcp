@@ -2993,6 +2993,89 @@ class MCPPlugin(Gimp.PlugIn):
     # CATEGORY 7 — Text
     # =========================================================================
 
+    def _resolve_font(self, name):
+        """Resolve a font name to a Gimp.Font."""
+        if not (hasattr(Gimp, "Font") and hasattr(Gimp.Font, "get_by_name")):
+            return None
+
+        font_obj = Gimp.Font.get_by_name(name)
+        if font_obj is not None:
+            return font_obj
+
+        # GIMP 3.2 dropped GIMP 2.x aliases; e.g. "Sans" no longer resolves,
+        # the 3.2 equivalent is "Sans-serif".
+        for alias in (name + "-serif", name + " Regular",
+                      name.replace(" ", "-"),
+                      "Sans-serif", "Serif", "Monospace"):
+            font_obj = Gimp.Font.get_by_name(alias)
+            if font_obj is not None:
+                return font_obj
+
+        raw = Gimp.fonts_get_list("")
+        flist = list(raw[1]) if isinstance(raw, tuple) and len(raw) > 1 else list(raw)
+        return flist[0] if flist else None
+
+    def _create_text_layer_native(self, image, text, font_obj, size, x, y, color_str):
+        """Create a text layer via Gimp.TextLayer.new."""
+        from gi.repository import Gegl
+        if not hasattr(Gimp, "TextLayer"):
+            return None
+
+        try:
+            tl = Gimp.TextLayer.new(image, text, font_obj, float(size), Gimp.Unit.pixel())
+        except Exception:
+            return None
+        if tl is None:
+            return None
+
+        try:
+            image.insert_layer(tl, None, 0)
+        except Exception:
+            return None
+
+        # Layer is now in the image; swallow offset/color failures so the
+        # caller does not fall through to the PDB fallback and insert a
+        # second layer.
+        try:
+            tl.set_offsets(x, y)
+        except Exception:
+            pass
+        try:
+            pdb   = Gimp.get_pdb()
+            cproc = pdb.lookup_procedure("gimp-text-layer-set-color")
+            if cproc:
+                ccfg = cproc.create_config()
+                ccfg.set_property("layer", tl)
+                ccfg.set_property("color", Gegl.Color.new(color_str))
+                cproc.run(ccfg)
+        except Exception:
+            pass
+        return tl
+
+    def _create_text_layer_pdb(self, image, text, font_obj, size, x, y):
+        """Create a text layer via the gimp-text-font PDB procedure."""
+        proc = Gimp.get_pdb().lookup_procedure("gimp-text-font")
+        if proc is None:
+            return
+        cfg = proc.create_config()
+        cfg.set_property("image",     image)
+        cfg.set_property("drawable",  None)
+        cfg.set_property("x",         float(x))
+        cfg.set_property("y",         float(y))
+        cfg.set_property("text",      text)
+        cfg.set_property("border",    0)
+        cfg.set_property("antialias", True)
+        cfg.set_property("size",      float(size))
+        cfg.set_property("font",      font_obj)
+        proc.run(cfg)
+
+    def _find_new_layer(self, image, before_ids):
+        """Return the first layer whose id is not in before_ids."""
+        for lyr in image.get_layers():
+            if lyr.get_id() not in before_ids:
+                return lyr
+        return None
+
     def _add_text(self, params):
         """Add a text layer."""
         try:
@@ -3004,40 +3087,44 @@ class MCPPlugin(Gimp.PlugIn):
             font        = params.get("font", "Sans")
             size        = int(params.get("size", 24))
             color_str   = params.get("color", "black")
-            image = self._get_image(image_index)
+
+            image      = self._get_image(image_index)
+            before_ids = {lyr.get_id() for lyr in image.get_layers()}
+            text_layer = None
+
             image.undo_group_start()
             Gimp.context_push()
             try:
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
-                # Gimp.text_fontname() removed in GIMP 3 — use PDB procedure
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-text-fontname")
-                text_layer = None
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("image",     image)
-                    cfg.set_property("drawable",  None)
-                    cfg.set_property("x",         float(x))
-                    cfg.set_property("y",         float(y))
-                    cfg.set_property("text",      text_str)
-                    cfg.set_property("border",    0)
-                    cfg.set_property("antialias", True)
-                    cfg.set_property("size",      float(size))
-                    cfg.set_property("fontname",  font)
-                    result = proc.run(cfg)
-                    if result:
-                        text_layer = result.index(1)
+                font_obj = self._resolve_font(font)
+                if font_obj is not None:
+                    text_layer = self._create_text_layer_native(
+                        image, text_str, font_obj, size, x, y, color_str)
+                    if text_layer is None:
+                        self._create_text_layer_pdb(
+                            image, text_str, font_obj, size, x, y)
             finally:
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()
+
+            if text_layer is None:
+                text_layer = self._find_new_layer(image, before_ids)
+            if text_layer is None:
+                # Issue #15: return an explicit error instead of a placeholder
+                # success so clients never chain ops on a fake handle.
+                return {
+                    "status": "error",
+                    "error":  "add_text: no text layer was created (no PDB procedure succeeded)",
+                }
+
             return {
                 "status": "success",
                 "results": {
-                    "layer_name":  text_layer.get_name() if text_layer else "unknown",
-                    "layer_id":    text_layer.get_id()   if text_layer else -1,
-                    "text_width":  text_layer.get_width()  if text_layer else 0,
-                    "text_height": text_layer.get_height() if text_layer else 0,
+                    "layer_name":  text_layer.get_name(),
+                    "layer_id":    text_layer.get_id(),
+                    "text_width":  text_layer.get_width(),
+                    "text_height": text_layer.get_height(),
                     "position":    [x, y],
                 }
             }
