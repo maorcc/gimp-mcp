@@ -2376,18 +2376,26 @@ class MCPPlugin(Gimp.PlugIn):
             op = self._channel_ops_from_string(operation)
             color = Gegl.Color.new(color_str)
             pdb = Gimp.get_pdb()
-            proc = pdb.lookup_procedure("gimp-by-color-select")
-            if proc:
+            proc = pdb.lookup_procedure("gimp-image-select-color")
+            if proc is None:
+                raise RuntimeError(
+                    "PDB procedure 'gimp-image-select-color' not found"
+                )
+            Gimp.context_push()
+            try:
+                Gimp.context_set_antialias(True)
+                Gimp.context_set_feather(False)
+                Gimp.context_set_sample_threshold_int(threshold)
+                Gimp.context_set_sample_merged(False)
+                Gimp.context_set_sample_transparent(False)
                 cfg = proc.create_config()
-                cfg.set_property("drawable",    drawable)
-                cfg.set_property("color",       color)
-                cfg.set_property("threshold",   threshold)
-                cfg.set_property("operation",   op)
-                cfg.set_property("antialias",   True)
-                cfg.set_property("feather",     False)
-                cfg.set_property("feather-radius", 0.0)
-                cfg.set_property("sample-merged", False)
+                cfg.set_property("image",     image)
+                cfg.set_property("drawable",  drawable)
+                cfg.set_property("color",     color)
+                cfg.set_property("operation", op)
                 proc.run(cfg)
+            finally:
+                Gimp.context_pop()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:
