@@ -93,39 +93,41 @@ uv sync
 
 Copy `gimp-mcp-plugin.py` to GIMP's plug-ins directory and restart GIMP.
 
-**Linux (standard):**
-```bash
-mkdir -p ~/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin
-cp gimp-mcp-plugin.py ~/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/
-chmod +x ~/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
-```
+> **Which directory?** GIMP names its per-user folder after its **major.minor** version
+> (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
+> *moves* when you upgrade GIMP (e.g. `3.0` → `3.2`). The snippet below auto-selects the
+> newest one, so it keeps working across upgrades. To check the path manually, open GIMP
+> and look at **Edit → Preferences → Folders → Plug-ins**.
+>
+> Launch GIMP at least once before running this, so its config folder exists.
 
-**Linux (Snap):**
+**macOS / Linux:**
 ```bash
-mkdir -p ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin
-cp gimp-mcp-plugin.py ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/
-chmod +x ~/snap/gimp/current/.config/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
-```
+# Pick the base directory for your platform:
+BASE="$HOME/Library/Application Support/GIMP"     # macOS
+# BASE="$HOME/.config/GIMP"                        # Linux (standard)
+# BASE="$HOME/snap/gimp/current/.config/GIMP"      # Linux (Snap)
 
-**macOS:**
-```bash
-mkdir -p ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin
-cp gimp-mcp-plugin.py ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin/
-chmod +x ~/Library/Application\ Support/GIMP/3.0/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py
+# Auto-select the newest GIMP 3.x config directory (3.0, 3.2, 3.4, ...):
+GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
+mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
+cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
+chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
+echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 ```
 
 **Windows:**
 ```
-%APPDATA%\GIMP\3.2\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
 ```
-No chmod needed on Windows. Just copy and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Just copy and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
 ### 3. Start the MCP Server in GIMP
 
 1. Open any image in GIMP
-2. Go to **Tools > Start MCP Server**
+2. Go to **Tools > MCP > Start MCP Server**
 3. Server starts on `localhost:9877`
 
 ### 4. Configure Your MCP Client
@@ -401,7 +403,9 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 - Check port 9877 is not blocked by firewall
 
 ### Plugin Not Visible in GIMP
+- Look under **Tools > MCP** (the plugin adds an `MCP` submenu, not a top-level `Tools` entry)
 - Confirm the plugin file is in the correct directory (see install steps above)
+- **Upgraded GIMP recently?** A minor upgrade (e.g. 3.0 → 3.2) moves the per-user config folder to a new version directory; reinstall the plugin into the new version's `plug-ins` folder. Verify the active path via **Edit > Preferences > Folders > Plug-ins**.
 - On Linux/macOS: ensure the file has execute permission (`chmod +x`)
 - Restart GIMP after installation
 - Check **Filters > Script-Fu > Console** for error messages
