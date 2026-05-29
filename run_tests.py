@@ -45,6 +45,17 @@ def t(name, r):
     print(f"  {'PASS' if ok else 'FAIL'} {name}: {detail}")
     return r
 
+def chk(name, ok, detail=''):
+    """Assert an arbitrary boolean condition (beyond response status)."""
+    global passed, failed
+    if ok:
+        passed += 1
+    else:
+        failed += 1
+        failures.append((name, str(detail)[:90]))
+    print(f"  {'PASS' if ok else 'FAIL'} {name}: {str(detail)[:65]}")
+    return ok
+
 # Setup
 r = cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
 img_id = r.get('image_id') or r.get('results', {}).get('image_id')
@@ -89,7 +100,14 @@ print()
 print("=== Cat 4: Selections ===")
 t('select_rect',    cmd('select_rectangle', {'image_index': 0, 'x': 10, 'y': 10, 'width': 40, 'height': 40}))
 t('select_ellipse', cmd('select_ellipse',   {'image_index': 0, 'x': 10, 'y': 10, 'width': 40, 'height': 40}))
+# Regression #23: select_by_color must actually create a selection, not
+# silently no-op while reporting success. Fill a known color and clear any
+# prior selection first, so a leftover selection can't mask a no-op.
+cmd('fill_layer',  {'image_index': 0, 'color': '#ffffff'})
+cmd('select_none', {'image_index': 0})
 t('select_color',   cmd('select_by_color',  {'image_index': 0, 'color': '#ffffff'}))
+_sel = cmd('get_selection_bounds', {'image_index': 0})
+chk('select_color_nonempty', _sel.get('results', {}).get('has_selection') is True, _sel.get('results'))
 t('select_all',     cmd('select_all',       {'image_index': 0}))
 t('select_none',    cmd('select_none',      {'image_index': 0}))
 t('invert_sel',     cmd('invert_selection', {'image_index': 0}))
