@@ -103,8 +103,9 @@ t('select_ellipse', cmd('select_ellipse',   {'image_index': 0, 'x': 10, 'y': 10,
 # Regression #23: select_by_color must actually create a selection, not
 # silently no-op while reporting success. Fill a known color and clear any
 # prior selection first, so a leftover selection can't mask a no-op.
-cmd('fill_layer',  {'image_index': 0, 'color': '#ffffff'})
-cmd('select_none', {'image_index': 0})
+# Assert the setup itself succeeds so a broken fill can't skew the real check.
+t('select_setup_fill', cmd('fill_layer',  {'image_index': 0, 'color': '#ffffff'}))
+t('select_setup_none', cmd('select_none', {'image_index': 0}))
 t('select_color',   cmd('select_by_color',  {'image_index': 0, 'color': '#ffffff'}))
 _sel = cmd('get_selection_bounds', {'image_index': 0})
 chk('select_color_nonempty', _sel.get('results', {}).get('has_selection') is True, _sel.get('results'))
