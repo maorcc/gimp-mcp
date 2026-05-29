@@ -110,6 +110,10 @@ BASE="$HOME/Library/Application Support/GIMP"     # macOS
 
 # Auto-select the newest GIMP 3.x config directory (3.0, 3.2, 3.4, ...):
 GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
+if [ -z "$GIMP_DIR" ]; then
+  echo "No GIMP 3.x config dir found under $BASE — launch GIMP once, then re-run." >&2
+  exit 1
+fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
 cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
@@ -117,7 +121,7 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 ```
 
 **Windows:**
-```
+```text
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
 ```
 Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Just copy and restart GIMP.
