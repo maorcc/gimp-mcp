@@ -96,6 +96,11 @@ class MCPPlugin(Gimp.PlugIn):
         # One client thread per connection; a retry after a client-side timeout
         # would otherwise drive the libgimp wire protocol concurrently and crash
         self.command_lock = threading.Lock()
+        # Track displays we create, keyed by image id. GIMP 3.2 exposes no
+        # Gimp.get_displays()/Display.get_image(), so close_image cannot find an
+        # image's display any other way (and image.delete() fails while a display
+        # still references the image).
+        self._displays = {}
 
     def do_set_i18n(self, procname):
         # Plugin has no translations; tell GIMP so it stops logging
@@ -147,16 +152,71 @@ class MCPPlugin(Gimp.PlugIn):
         procedure.add_menu_path('<Image>/Tools/MCP')
         return procedure
 
+    def _notify(self, msg):
+        """Show UI-visible feedback in a GIMP dialog, then restore the handler.
+
+        Menu actions previously only printed to the console (invisible inside
+        GIMP). Forcing MESSAGE_BOX guarantees the user sees the confirmation.
+        """
+        print(msg)
+        try:
+            prev = Gimp.message_get_handler()
+            Gimp.message_set_handler(Gimp.MessageHandlerType.MESSAGE_BOX)
+            Gimp.message(msg)
+            Gimp.message_set_handler(prev)
+        except Exception as e:
+            print(f"[MCP] _notify failed: {e}")
+
+    def _color(self, spec):
+        """Build a Gegl.Color from a flexible spec.
+
+        Accepts hex ("#rrggbb"/"#rrggbbaa"), CSS-style "rgb(r,g,b)"/"rgba(...)",
+        named colors ("red", "transparent"), or an [r,g,b(,a)] list/tuple.
+        rgb()/list components are read as 0-255 when any value exceeds 1, else as
+        0-1 — so rgb(255,190,216) and rgb(1.0,0.75,0.85) both do the intuitive
+        thing. Anything that isn't a str/list/tuple is passed through unchanged.
+        """
+        from gi.repository import Gegl
+
+        def _from_components(nums):
+            # Numeric components are treated as sRGB. Gegl parses hex as sRGB but
+            # rgb()/set_rgba as LINEAR, so we normalize to 0-255 and build a hex
+            # string — the only verified sRGB-correct construction path.
+            vals = [float(n) for n in nums]
+            if len(vals) < 3:
+                raise ValueError(f"color needs at least 3 components: {nums!r}")
+            scale = 255.0 if any(v > 1.0 for v in vals[:4]) else 1.0
+            ch = [max(0, min(255, round(v / scale * 255.0))) for v in vals[:3]]
+            if len(vals) > 3:
+                a = max(0, min(255, round(vals[3] / scale * 255.0)))
+                return Gegl.Color.new(f"#{ch[0]:02x}{ch[1]:02x}{ch[2]:02x}{a:02x}")
+            return Gegl.Color.new(f"#{ch[0]:02x}{ch[1]:02x}{ch[2]:02x}")
+
+        if isinstance(spec, (list, tuple)):
+            return _from_components(spec)
+
+        if isinstance(spec, str):
+            s = spec.strip()
+            if s.lower().startswith("rgb"):
+                inside = s[s.find("(") + 1:s.rfind(")")]
+                parts = [p for p in inside.replace(",", " ").split() if p]
+                return _from_components(parts)
+            # hex and named colors are handled natively by Gegl
+            return Gegl.Color.new(s)
+
+        # Already a Gegl.Color (or anything Gegl understands) — pass through
+        return spec
+
     def _run_check(self, procedure, config, run_data):
         """Menu action: print server status."""
         status = "RUNNING" if self.running else "STOPPED"
-        print(f"[MCP] Server status: {status} on port {self.port}")
+        self._notify(f"[MCP] Server status: {status} on port {self.port}")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
     def _run_restart(self, procedure, config, run_data):
         """Menu action: restart the server socket."""
         result = self._restart_server()
-        print(f"[MCP] Restart result: {result}")
+        self._notify(f"[MCP] Restart result: {result}")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
     def shutdown_server(self, signum=None, frame=None):
@@ -182,6 +242,11 @@ class MCPPlugin(Gimp.PlugIn):
             self.socket.bind((self.host, self.port))
             self.socket.listen(1)
             print(f"GimpMCP server started on {self.host}:{self.port}")
+            # Signal the main thread that the bind succeeded so it can show
+            # UI feedback (Gimp.message must be called on the main thread).
+            self._bind_error = None
+            if getattr(self, "_bind_event", None) is not None:
+                self._bind_event.set()
 
             while self.running:
                 try:
@@ -206,19 +271,37 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             print(f"Error in MCP server thread: {str(e)}")
             self.running = False
+            # Report the failure to the waiting main thread for UI feedback.
+            self._bind_error = str(e)
+            if getattr(self, "_bind_event", None) is not None:
+                self._bind_event.set()
 
     def run(self, procedure, config, run_data):
         """Menu handler: start the server."""
         if self.running:
-            print("MCP Server is already running")
+            self._notify(f"MCP Server is already running on {self.host}:{self.port}")
             return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
         signal.signal(signal.SIGTERM, self.shutdown_server)
         signal.signal(signal.SIGINT, self.shutdown_server)
 
-        # Server socket runs in a background thread
+        # Server socket runs in a background thread. Use an Event so we can wait
+        # for the bind to succeed (or fail) and report the outcome in the UI from
+        # this (main) thread — Gimp.message must not be called off the main thread.
+        self._bind_event = threading.Event()
+        self._bind_error = None
         server_thread = threading.Thread(target=self._start_server_thread, daemon=True)
         server_thread.start()
+
+        if self._bind_event.wait(timeout=5.0):
+            if self._bind_error is None:
+                self._notify(f"MCP Server started on {self.host}:{self.port}")
+            else:
+                self._notify(f"MCP Server failed to start: {self._bind_error}")
+                return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+        else:
+            self._notify(f"MCP Server starting on {self.host}:{self.port} "
+                         f"(no confirmation within 5s)")
 
         # GLib main loop runs in the main thread — required for GIMP API calls
         # (all Gimp.* calls go over the wire protocol which needs GLib to dispatch)
@@ -1496,7 +1579,6 @@ class MCPPlugin(Gimp.PlugIn):
             base_type  = mode_map.get(color_mode, Gimp.ImageBaseType.RGB)
             layer_type = layer_type_map.get(color_mode, Gimp.ImageType.RGB_IMAGE)
 
-            from gi.repository import Gegl
             image = Gimp.Image.new(width, height, base_type)
             image.set_resolution(resolution, resolution)
 
@@ -1507,11 +1589,11 @@ class MCPPlugin(Gimp.PlugIn):
                 layer.add_alpha()
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT)
             else:
-                bg_color = Gegl.Color.new(fill)
+                bg_color = self._color(fill)
                 Gimp.context_set_background(bg_color)
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
 
-            Gimp.Display.new(image)
+            self._displays[image.get_id()] = Gimp.Display.new(image)
             Gimp.displays_flush()
 
             print(f"New canvas created: {width}x{height} {color_mode} fill={fill}")
@@ -1700,6 +1782,7 @@ class MCPPlugin(Gimp.PlugIn):
             if image is None:
                 return {"status": "error", "error": f"Could not open file: {file_path}"}
             display = Gimp.Display.new(image)
+            self._displays[image.get_id()] = display
             Gimp.displays_flush()
             base_type = image.get_base_type()
             mode_map = {
@@ -2317,7 +2400,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _resize_canvas(self, params):
         """Resize canvas without scaling content."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             new_w  = int(params.get("width"))
             new_h  = int(params.get("height"))
@@ -2347,7 +2429,7 @@ class MCPPlugin(Gimp.PlugIn):
                 if fill.lower() != "transparent":
                     Gimp.context_push()
                     try:
-                        bg = Gegl.Color.new(fill)
+                        bg = self._color(fill)
                         Gimp.context_set_background(bg)
                         image.flatten()
                     finally:
@@ -2406,7 +2488,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_by_color(self, params):
         """Select by color similarity."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             color_str   = params.get("color", "white")
@@ -2415,7 +2496,7 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             op = self._channel_ops_from_string(operation)
-            color = Gegl.Color.new(color_str)
+            color = self._color(color_str)
             pdb = Gimp.get_pdb()
             proc = pdb.lookup_procedure("gimp-image-select-color")
             if proc is None:
@@ -2527,7 +2608,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _create_layer(self, params):
         """Create and insert a new layer."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             name        = params.get("name", "New Layer")
             opacity     = float(params.get("opacity", 100))
@@ -2551,7 +2631,7 @@ class MCPPlugin(Gimp.PlugIn):
                         layer.add_alpha()
                         Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT)
                     else:
-                        bg = Gegl.Color.new(fill)
+                        bg = self._color(fill)
                         Gimp.context_set_background(bg)
                         Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
                 finally:
@@ -2740,7 +2820,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _fill_layer(self, params):
         """Fill entire layer with color."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             color_str   = params.get("color", "white")
@@ -2750,7 +2829,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 Gimp.Selection.all(image)
-                fg = Gegl.Color.new(color_str)
+                fg = self._color(color_str)
                 Gimp.context_set_foreground(fg)
                 Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
                 Gimp.Selection.none(image)
@@ -2765,7 +2844,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _fill_selection(self, params):
         """Fill current selection with color or transparency."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             fill_type   = (params.get("fill_type") or "foreground").lower()
@@ -2786,7 +2864,7 @@ class MCPPlugin(Gimp.PlugIn):
                     Gimp.Drawable.edit_fill(drawable, Gimp.FillType.PATTERN)
                 else:
                     # foreground (default) or explicit color
-                    fg = Gegl.Color.new(color_str if fill_type not in ("foreground",) else color_str)
+                    fg = self._color(color_str if fill_type not in ("foreground",) else color_str)
                     Gimp.context_set_foreground(fg)
                     Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
             finally:
@@ -2800,13 +2878,12 @@ class MCPPlugin(Gimp.PlugIn):
     def _set_colors(self, params):
         """Set foreground and/or background color."""
         try:
-            from gi.repository import Gegl
             fg_str = params.get("foreground", None)
             bg_str = params.get("background", None)
             if fg_str is not None:
-                Gimp.context_set_foreground(Gegl.Color.new(fg_str))
+                Gimp.context_set_foreground(self._color(fg_str))
             if bg_str is not None:
-                Gimp.context_set_background(Gegl.Color.new(bg_str))
+                Gimp.context_set_background(self._color(bg_str))
             return {"status": "success", "results": {"foreground": fg_str, "background": bg_str}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -2814,7 +2891,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _draw_line(self, params):
         """Draw a straight line."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             x1 = float(params.get("x1", 0))
@@ -2830,7 +2906,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 if color_str:
-                    Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                    Gimp.context_set_foreground(self._color(color_str))
                 Gimp.context_set_brush_size(line_width)
                 Gimp.context_set_opacity(100.0)
                 coords = [x1, y1, x2, y2]
@@ -2849,7 +2925,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _draw_rectangle(self, params):
         """Draw a rectangle outline."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             x          = int(params.get("x", 0))
@@ -2864,7 +2939,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 if color_str:
-                    Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                    Gimp.context_set_foreground(self._color(color_str))
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
                 Gimp.context_set_opacity(100.0)
@@ -2887,7 +2962,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _draw_ellipse(self, params):
         """Draw an ellipse outline."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             x          = int(params.get("x", 0))
@@ -2902,7 +2976,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 if color_str:
-                    Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                    Gimp.context_set_foreground(self._color(color_str))
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
                 Gimp.context_set_opacity(100.0)
@@ -2925,7 +2999,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _fill_rectangle(self, params):
         """Fill a rectangular region with color."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             x       = int(params.get("x", 0))
@@ -2939,7 +3012,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
-                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                Gimp.context_set_foreground(self._color(color_str))
                 Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
                 Gimp.Selection.none(image)
             finally:
@@ -2953,7 +3026,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _fill_ellipse(self, params):
         """Fill an elliptical region with color."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             x       = int(params.get("x", 0))
@@ -2967,7 +3039,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
-                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                Gimp.context_set_foreground(self._color(color_str))
                 Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
                 Gimp.Selection.none(image)
             finally:
@@ -2979,9 +3051,14 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _gradient_fill(self, params):
-        """Fill with a gradient using GEGL (gimp-blend was removed in GIMP 3)."""
+        """Fill the selection (or whole layer) with an FG->BG gradient.
+
+        Uses Gimp.Drawable.edit_gradient_fill (GIMP 3.2). This honours the active
+        selection and writes correct sRGB pixels. The previous GEGL-graph approach
+        rendered to a shadow buffer with normalized (0..1) coordinates and never
+        produced visible output.
+        """
         try:
-            from gi.repository import Gegl
             image_index   = int(params.get("image_index", 0))
             layer_name    = params.get("layer_name", None)
             color1        = params.get("color1", "black")
@@ -2991,45 +3068,33 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             w = image.get_width()
             h = image.get_height()
-            x1 = float(params.get("x1") or params.get("start_x") or 0)
-            y1 = float(params.get("y1") or params.get("start_y") or 0)
-            x2 = float(params.get("x2") or params.get("end_x") or w)
-            y2 = float(params.get("y2") or params.get("end_y") or h)
+
+            def _coord(*keys, default):
+                for k in keys:
+                    v = params.get(k, None)
+                    if v is not None:
+                        return float(v)
+                return float(default)
+
+            x1 = _coord("x1", "start_x", default=0)
+            y1 = _coord("y1", "start_y", default=0)
+            x2 = _coord("x2", "end_x", default=w)
+            y2 = _coord("y2", "end_y", default=h)
+
+            gtype = (Gimp.GradientType.RADIAL if gradient_type == "radial"
+                     else Gimp.GradientType.LINEAR)
 
             image.undo_group_start()
             Gimp.context_push()
             try:
-                Gimp.context_set_foreground(Gegl.Color.new(color1))
-                Gimp.context_set_background(Gegl.Color.new(color2))
-
-                Gegl.init(None)
-                shadow_buf = drawable.get_shadow_buffer()
-                graph = Gegl.Node()
-
-                op_name = "gegl:radial-gradient" if gradient_type == "radial" else "gegl:linear-gradient"
-                grad_node = graph.create_child(op_name)
-                try:
-                    grad_node.set_property("start-color", Gegl.Color.new(color1))
-                    grad_node.set_property("end-color",   Gegl.Color.new(color2))
-                except Exception:
-                    pass
-                if w > 0 and h > 0:
-                    try:
-                        grad_node.set_property("x0", x1 / w)
-                        grad_node.set_property("y0", y1 / h)
-                        grad_node.set_property("x1", x2 / w)
-                        grad_node.set_property("y1", y2 / h)
-                    except Exception:
-                        pass
-
-                out_node = graph.create_child("gegl:write-buffer")
-                out_node.set_property("buffer", shadow_buf)
-                grad_node.link(out_node)
-                out_node.process()
-
-                shadow_buf.flush()
-                drawable.merge_shadow(True)
-                drawable.update(0, 0, w, h)
+                Gimp.context_set_foreground(self._color(color1))
+                Gimp.context_set_background(self._color(color2))
+                Gimp.context_set_gradient_fg_bg_rgb()
+                # (gradient_type, offset, supersample, supersample_max_depth,
+                #  supersample_threshold, dither, x1, y1, x2, y2)
+                drawable.edit_gradient_fill(
+                    gtype, 0.0, False, 3, 0.2, True, x1, y1, x2, y2
+                )
             finally:
                 Gimp.context_pop()
                 image.undo_group_end()
@@ -3066,7 +3131,6 @@ class MCPPlugin(Gimp.PlugIn):
 
     def _create_text_layer_native(self, image, text, font_obj, size, x, y, color_str):
         """Create a text layer via Gimp.TextLayer.new."""
-        from gi.repository import Gegl
         if not hasattr(Gimp, "TextLayer"):
             return None
 
@@ -3095,7 +3159,7 @@ class MCPPlugin(Gimp.PlugIn):
             if cproc:
                 ccfg = cproc.create_config()
                 ccfg.set_property("layer", tl)
-                ccfg.set_property("color", Gegl.Color.new(color_str))
+                ccfg.set_property("color", self._color(color_str))
                 cproc.run(ccfg)
         except Exception:
             pass
@@ -3128,7 +3192,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _add_text(self, params):
         """Add a text layer."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             text_str    = params.get("text", "")
             x           = int(params.get("x", 0))
@@ -3144,7 +3207,7 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             Gimp.context_push()
             try:
-                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                Gimp.context_set_foreground(self._color(color_str))
                 font_obj = self._resolve_font(font)
                 if font_obj is not None:
                     text_layer = self._create_text_layer_native(
@@ -3183,7 +3246,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _edit_text(self, params):
         """Edit an existing text layer."""
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", "")
             new_text    = params.get("text", None)
@@ -3222,7 +3284,7 @@ class MCPPlugin(Gimp.PlugIn):
                     if proc:
                         cfg = proc.create_config()
                         cfg.set_property("layer", layer)
-                        cfg.set_property("color", Gegl.Color.new(new_color))
+                        cfg.set_property("color", self._color(new_color))
                         proc.run(cfg)
             finally:
                 image.undo_group_end()
@@ -3366,7 +3428,6 @@ class MCPPlugin(Gimp.PlugIn):
           4. Gaussian-blur with plug-in-gauss
         """
         try:
-            from gi.repository import Gegl
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
             offset_x    = int(params.get("offset_x", 5))
@@ -3386,7 +3447,7 @@ class MCPPlugin(Gimp.PlugIn):
                 image.insert_layer(shadow_layer, None, src_pos + 1)
 
                 # 2. Fill shadow layer with shadow color, preserving alpha shape
-                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                Gimp.context_set_foreground(self._color(color_str))
                 shadow_layer.set_lock_alpha(True)
                 Gimp.Drawable.edit_fill(shadow_layer, Gimp.FillType.FOREGROUND)
                 shadow_layer.set_lock_alpha(False)
@@ -3683,7 +3744,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _export_sprite_sheet(self, params):
         """Combine frames into a sprite sheet."""
         try:
-            from gi.repository import Gegl
             output_path = params.get("output_path", "")
             columns     = params.get("columns", None)
             padding     = int(params.get("padding", 0))
@@ -3713,7 +3773,7 @@ class MCPPlugin(Gimp.PlugIn):
             sheet = Gimp.Image.new(sheet_w, sheet_h, Gimp.ImageBaseType.RGBA)
             bg_layer = Gimp.Layer.new(sheet, "Background", sheet_w, sheet_h, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)
             sheet.insert_layer(bg_layer, None, 0)
-            Gimp.context_set_background(Gegl.Color.new("transparent"))
+            Gimp.context_set_background(self._color("transparent"))
             Gimp.Drawable.edit_fill(bg_layer, Gimp.FillType.TRANSPARENT)
 
             for i, frame in enumerate(frames):
@@ -3852,39 +3912,24 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    # GIMP 3.x libgimp exposes only undo *grouping* (undo_group_start/end,
+    # undo_freeze/thaw) — there is no scriptable API to step the undo history,
+    # so undo/redo cannot be implemented. Report that clearly instead of
+    # crashing with AttributeError: 'Image' object has no attribute 'undo'.
+    _UNDO_UNSUPPORTED = (
+        "GIMP 3.x does not expose a scriptable undo/redo. libgimp offers undo "
+        "grouping only (undo_group_start/end); there is no API to step the undo "
+        "history. Use Edit > Undo/Redo (Ctrl+Z / Ctrl+Y) in GIMP, or re-open the "
+        "source file to revert."
+    )
+
     def _undo(self, params):
-        """Undo N steps."""
-        try:
-            image_index = int(params.get("image_index", 0))
-            steps       = int(params.get("steps", 1))
-            image = self._get_image(image_index)
-            done = 0
-            for _ in range(steps):
-                if image.undo():
-                    done += 1
-                else:
-                    break
-            Gimp.displays_flush()
-            return {"status": "success", "results": {"steps_undone": done}}
-        except Exception as e:
-            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+        """Not supported: GIMP 3.x has no scriptable undo."""
+        return {"status": "error", "error": self._UNDO_UNSUPPORTED}
 
     def _redo(self, params):
-        """Redo N steps."""
-        try:
-            image_index = int(params.get("image_index", 0))
-            steps       = int(params.get("steps", 1))
-            image = self._get_image(image_index)
-            done = 0
-            for _ in range(steps):
-                if image.redo():
-                    done += 1
-                else:
-                    break
-            Gimp.displays_flush()
-            return {"status": "success", "results": {"steps_redone": done}}
-        except Exception as e:
-            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+        """Not supported: GIMP 3.x has no scriptable redo."""
+        return {"status": "error", "error": self._UNDO_UNSUPPORTED}
 
     def _convert_color_mode(self, params):
         """Convert image color mode."""
@@ -3945,14 +3990,26 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("image", image)
                     cfg.set_property("file", gio_file)
                     proc.run(cfg)
-            # Delete all displays for this image
-            for display in Gimp.get_displays():
+            # GIMP 3.2 has no Gimp.get_displays() and Gimp.Display has no
+            # get_image(), so an image's display can only be found via the
+            # registry we populate in open_image/new_canvas. gimp_image_delete
+            # is a no-op while a display still references the image, so drop the
+            # tracked display first.
+            img_id = image.get_id()
+            disp = self._displays.pop(img_id, None)
+            if disp is not None:
                 try:
-                    if display.get_image().get_id() == image.get_id():
-                        Gimp.Display.delete(display)
+                    disp.delete()
                 except Exception:
                     pass
             image.delete()
+            Gimp.displays_flush()
+            if image.is_valid():
+                return {"status": "error", "error": (
+                    "Could not close image: it still has an open display not tracked "
+                    "by the plugin (e.g. opened in GIMP directly or before this "
+                    "session started). Close the window manually with Ctrl+W."
+                )}
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
