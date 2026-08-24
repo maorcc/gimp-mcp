@@ -162,8 +162,11 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             prev = Gimp.message_get_handler()
             Gimp.message_set_handler(Gimp.MessageHandlerType.MESSAGE_BOX)
-            Gimp.message(msg)
-            Gimp.message_set_handler(prev)
+            try:
+                Gimp.message(msg)
+            finally:
+                # Always restore the handler, even if Gimp.message raises.
+                Gimp.message_set_handler(prev)
         except Exception as e:
             print(f"[MCP] _notify failed: {e}")
 
@@ -172,9 +175,12 @@ class MCPPlugin(Gimp.PlugIn):
 
         Accepts hex ("#rrggbb"/"#rrggbbaa"), CSS-style "rgb(r,g,b)"/"rgba(...)",
         named colors ("red", "transparent"), or an [r,g,b(,a)] list/tuple.
-        rgb()/list components are read as 0-255 when any value exceeds 1, else as
-        0-1 — so rgb(255,190,216) and rgb(1.0,0.75,0.85) both do the intuitive
-        thing. Anything that isn't a str/list/tuple is passed through unchanged.
+        RGB components are read as 0-255 when any of them exceeds 1, else as 0-1
+        — so rgb(255,190,216) and rgb(1.0,0.75,0.85) both do the intuitive thing.
+        Alpha is scaled independently (CSS uses 0-255 for RGB but 0-1 for alpha):
+        an alpha value <= 1 is treated as 0-1, otherwise as 0-255. So
+        rgba(255,0,0,0.5) is 50% opaque and rgba(255,0,0,128) also is.
+        Anything that isn't a str/list/tuple is passed through unchanged.
         """
         from gi.repository import Gegl
 
@@ -185,10 +191,14 @@ class MCPPlugin(Gimp.PlugIn):
             vals = [float(n) for n in nums]
             if len(vals) < 3:
                 raise ValueError(f"color needs at least 3 components: {nums!r}")
-            scale = 255.0 if any(v > 1.0 for v in vals[:4]) else 1.0
-            ch = [max(0, min(255, round(v / scale * 255.0))) for v in vals[:3]]
+            # Scale RGB off the RGB channels only — alpha lives on its own scale.
+            rgb_scale = 255.0 if any(v > 1.0 for v in vals[:3]) else 1.0
+            ch = [max(0, min(255, round(v / rgb_scale * 255.0))) for v in vals[:3]]
             if len(vals) > 3:
-                a = max(0, min(255, round(vals[3] / scale * 255.0)))
+                av = vals[3]
+                # Fractional alpha (<= 1) is 0-1; larger values are 0-255.
+                a = av if av > 1.0 else av * 255.0
+                a = max(0, min(255, round(a)))
                 return Gegl.Color.new(f"#{ch[0]:02x}{ch[1]:02x}{ch[2]:02x}{a:02x}")
             return Gegl.Color.new(f"#{ch[0]:02x}{ch[1]:02x}{ch[2]:02x}")
 
