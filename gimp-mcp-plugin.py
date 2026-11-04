@@ -56,6 +56,9 @@ class MCPPlugin(Gimp.PlugIn):
         self.context = {}
         exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
+        # One client thread per connection; a retry after a client-side timeout
+        # would otherwise drive the libgimp wire protocol concurrently and crash
+        self.command_lock = threading.Lock()
 
     def do_set_i18n(self, procname):
         # Plugin has no translations; tell GIMP so it stops logging
@@ -226,7 +229,8 @@ class MCPPlugin(Gimp.PlugIn):
             request = str(buffer)
         
         # print(f"Parsed request: {request}")
-        response = self.execute_command(request)
+        with self.command_lock:
+            response = self.execute_command(request)
         print(f"response type: {type(response)}")
         
         if isinstance(response, dict):
