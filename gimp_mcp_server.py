@@ -28,9 +28,10 @@ class GimpConnection:
             return
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(10)
+            self.sock.connect((self.host, self.port))
             # 10s was too short for flattening/scaling multi-layer PSDs and 16-bit renders
             self.sock.settimeout(300)
-            self.sock.connect((self.host, self.port))
             logger.info(f"Connected to GIMP at {self.host}:{self.port}")
         except Exception as e:
             self.sock = None
