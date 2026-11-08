@@ -23,6 +23,7 @@ import base64
 import tempfile
 import os
 import platform
+import re
 import signal
 
 # Constants for configuration and thresholds
@@ -43,6 +44,132 @@ def exec_and_get_results(command, context):
     sys.stdout = original_stdout
     output = buffer.getvalue()
     return output
+
+
+# CSS Color Module Level 4 named colours -> hex.
+#
+# Gegl.Color.new() understands hex and a handful of basic names, but for
+# anything else it silently returns a sentinel -- (0, 1, 1, 0.67), i.e. cyan
+# -- instead of raising, so "cornflowerblue" and "orange" both land as cyan.
+# It also misreads rgb(r,g,b) as raw 0..1 floats, turning rgb(40,180,90) into
+# (40.0, 180.0, 90.0), which clamps to white. Normalising every colour to hex
+# before Gegl sees it keeps both failures off the canvas.
+CSS_COLORS = {
+    "aliceblue": "#f0f8ff", "antiquewhite": "#faebd7", "aqua": "#00ffff", "aquamarine": "#7fffd4",
+    "azure": "#f0ffff", "beige": "#f5f5dc", "bisque": "#ffe4c4", "black": "#000000",
+    "blanchedalmond": "#ffebcd", "blue": "#0000ff", "blueviolet": "#8a2be2", "brown": "#a52a2a",
+    "burlywood": "#deb887", "cadetblue": "#5f9ea0", "chartreuse": "#7fff00", "chocolate": "#d2691e",
+    "coral": "#ff7f50", "cornflowerblue": "#6495ed", "cornsilk": "#fff8dc", "crimson": "#dc143c",
+    "cyan": "#00ffff", "darkblue": "#00008b", "darkcyan": "#008b8b", "darkgoldenrod": "#b8860b",
+    "darkgray": "#a9a9a9", "darkgreen": "#006400", "darkgrey": "#a9a9a9", "darkkhaki": "#bdb76b",
+    "darkmagenta": "#8b008b", "darkolivegreen": "#556b2f", "darkorange": "#ff8c00", "darkorchid": "#9932cc",
+    "darkred": "#8b0000", "darksalmon": "#e9967a", "darkseagreen": "#8fbc8f", "darkslateblue": "#483d8b",
+    "darkslategray": "#2f4f4f", "darkslategrey": "#2f4f4f", "darkturquoise": "#00ced1", "darkviolet": "#9400d3",
+    "deeppink": "#ff1493", "deepskyblue": "#00bfff", "dimgray": "#696969", "dimgrey": "#696969",
+    "dodgerblue": "#1e90ff", "firebrick": "#b22222", "floralwhite": "#fffaf0", "forestgreen": "#228b22",
+    "fuchsia": "#ff00ff", "gainsboro": "#dcdcdc", "ghostwhite": "#f8f8ff", "gold": "#ffd700",
+    "goldenrod": "#daa520", "gray": "#808080", "green": "#008000", "greenyellow": "#adff2f",
+    "grey": "#808080", "honeydew": "#f0fff0", "hotpink": "#ff69b4", "indianred": "#cd5c5c",
+    "indigo": "#4b0082", "ivory": "#fffff0", "khaki": "#f0e68c", "lavender": "#e6e6fa",
+    "lavenderblush": "#fff0f5", "lawngreen": "#7cfc00", "lemonchiffon": "#fffacd", "lightblue": "#add8e6",
+    "lightcoral": "#f08080", "lightcyan": "#e0ffff", "lightgoldenrodyellow": "#fafad2", "lightgray": "#d3d3d3",
+    "lightgreen": "#90ee90", "lightgrey": "#d3d3d3", "lightpink": "#ffb6c1", "lightsalmon": "#ffa07a",
+    "lightseagreen": "#20b2aa", "lightskyblue": "#87cefa", "lightslategray": "#778899", "lightslategrey": "#778899",
+    "lightsteelblue": "#b0c4de", "lightyellow": "#ffffe0", "lime": "#00ff00", "limegreen": "#32cd32",
+    "linen": "#faf0e6", "magenta": "#ff00ff", "maroon": "#800000", "mediumaquamarine": "#66cdaa",
+    "mediumblue": "#0000cd", "mediumorchid": "#ba55d3", "mediumpurple": "#9370db", "mediumseagreen": "#3cb371",
+    "mediumslateblue": "#7b68ee", "mediumspringgreen": "#00fa9a", "mediumturquoise": "#48d1cc", "mediumvioletred": "#c71585",
+    "midnightblue": "#191970", "mintcream": "#f5fffa", "mistyrose": "#ffe4e1", "moccasin": "#ffe4b5",
+    "navajowhite": "#ffdead", "navy": "#000080", "oldlace": "#fdf5e6", "olive": "#808000",
+    "olivedrab": "#6b8e23", "orange": "#ffa500", "orangered": "#ff4500", "orchid": "#da70d6",
+    "palegoldenrod": "#eee8aa", "palegreen": "#98fb98", "paleturquoise": "#afeeee", "palevioletred": "#db7093",
+    "papayawhip": "#ffefd5", "peachpuff": "#ffdab9", "peru": "#cd853f", "pink": "#ffc0cb",
+    "plum": "#dda0dd", "powderblue": "#b0e0e6", "purple": "#800080", "rebeccapurple": "#663399",
+    "red": "#ff0000", "rosybrown": "#bc8f8f", "royalblue": "#4169e1", "saddlebrown": "#8b4513",
+    "salmon": "#fa8072", "sandybrown": "#f4a460", "seagreen": "#2e8b57", "seashell": "#fff5ee",
+    "sienna": "#a0522d", "silver": "#c0c0c0", "skyblue": "#87ceeb", "slateblue": "#6a5acd",
+    "slategray": "#708090", "slategrey": "#708090", "snow": "#fffafa", "springgreen": "#00ff7f",
+    "steelblue": "#4682b4", "tan": "#d2b48c", "teal": "#008080", "thistle": "#d8bfd8",
+    "tomato": "#ff6347", "turquoise": "#40e0d0", "violet": "#ee82ee", "wheat": "#f5deb3",
+    "white": "#ffffff", "whitesmoke": "#f5f5f5", "yellow": "#ffff00", "yellowgreen": "#9acd32",
+}
+
+_RGB_FUNC_RE = re.compile(
+    r"^rgba?\(\s*([+-]?[0-9.]+%?)\s*,\s*([+-]?[0-9.]+%?)\s*,"
+    r"\s*([+-]?[0-9.]+%?)\s*(?:,\s*([+-]?[0-9.]+%?)\s*)?\)$",
+    re.IGNORECASE,
+)
+
+
+def _colour_channel(token):
+    """One rgb() channel -> 0-255 int. Accepts "128" or "50%"."""
+    token = token.strip()
+    if token.endswith("%"):
+        value = float(token[:-1]) * 255.0 / 100.0
+    else:
+        value = float(token)
+    return max(0, min(255, round(value)))
+
+
+def _alpha_channel(token):
+    """rgb() alpha -> 0-255 int. Accepts "0.5" or "50%"."""
+    token = token.strip()
+    if token.endswith("%"):
+        value = float(token[:-1]) * 255.0 / 100.0
+    else:
+        value = float(token) * 255.0
+    return max(0, min(255, round(value)))
+
+
+def parse_color(value):
+    """Normalise a colour string to #RRGGBB or #RRGGBBAA for Gegl.
+
+    Accepts hex (#rgb, #rgba, #rrggbb, #rrggbbaa), any CSS Level 4 colour
+    name, "transparent", and rgb()/rgba() with numbers or percentages.
+
+    Raises ValueError on an unparseable string (and TypeError if handed a
+    non-string), so a bad colour surfaces as an error instead of being
+    painted as cyan or white.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"color must be a string, got {value!r}")
+    text = value.strip().lower()
+    if not text:
+        raise ValueError("color is empty")
+
+    if text == "transparent":
+        return "#00000000"
+
+    if text.startswith("#"):
+        digits = text[1:]
+        if not re.fullmatch(r"[0-9a-f]+", digits) or len(digits) not in (3, 4, 6, 8):
+            raise ValueError(
+                f"invalid hex color {value!r}: expected #rgb, #rgba, "
+                "#rrggbb or #rrggbbaa"
+            )
+        if len(digits) in (3, 4):
+            digits = "".join(ch * 2 for ch in digits)
+        return "#" + digits
+
+    match = _RGB_FUNC_RE.match(text)
+    if match:
+        r, g, b, a = match.groups()
+        hex_rgb = (
+            f"#{_colour_channel(r):02x}"
+            f"{_colour_channel(g):02x}"
+            f"{_colour_channel(b):02x}"
+        )
+        if a is None:
+            return hex_rgb
+        return hex_rgb + f"{_alpha_channel(a):02x}"
+
+    if text in CSS_COLORS:
+        return CSS_COLORS[text]
+
+    raise ValueError(
+        f"unrecognised color {value!r}: use hex (#rrggbb), a CSS color "
+        "name, rgb()/rgba(), or 'transparent'"
+    )
 
 
 class MCPPlugin(Gimp.PlugIn):
@@ -1470,7 +1597,7 @@ class MCPPlugin(Gimp.PlugIn):
                 layer.add_alpha()
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT)
             else:
-                bg_color = Gegl.Color.new(fill)
+                bg_color = Gegl.Color.new(parse_color(fill))
                 Gimp.context_set_background(bg_color)
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
 
@@ -2310,7 +2437,7 @@ class MCPPlugin(Gimp.PlugIn):
                 if fill.lower() != "transparent":
                     Gimp.context_push()
                     try:
-                        bg = Gegl.Color.new(fill)
+                        bg = Gegl.Color.new(parse_color(fill))
                         Gimp.context_set_background(bg)
                         image.flatten()
                     finally:
@@ -2378,7 +2505,7 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             op = self._channel_ops_from_string(operation)
-            color = Gegl.Color.new(color_str)
+            color = Gegl.Color.new(parse_color(color_str))
             pdb = Gimp.get_pdb()
             proc = pdb.lookup_procedure("gimp-image-select-color")
             if proc is None:
@@ -2514,7 +2641,7 @@ class MCPPlugin(Gimp.PlugIn):
                         layer.add_alpha()
                         Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT)
                     else:
-                        bg = Gegl.Color.new(fill)
+                        bg = Gegl.Color.new(parse_color(fill))
                         Gimp.context_set_background(bg)
                         Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
                 finally:
@@ -2713,7 +2840,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 Gimp.Selection.all(image)
-                fg = Gegl.Color.new(color_str)
+                fg = Gegl.Color.new(parse_color(color_str))
                 Gimp.context_set_foreground(fg)
                 Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
                 Gimp.Selection.none(image)
@@ -2749,7 +2876,7 @@ class MCPPlugin(Gimp.PlugIn):
                     Gimp.Drawable.edit_fill(drawable, Gimp.FillType.PATTERN)
                 else:
                     # foreground (default) or explicit color
-                    fg = Gegl.Color.new(color_str if fill_type not in ("foreground",) else color_str)
+                    fg = Gegl.Color.new(parse_color(color_str if fill_type not in ("foreground",) else color_str))
                     Gimp.context_set_foreground(fg)
                     Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
             finally:
@@ -2767,9 +2894,9 @@ class MCPPlugin(Gimp.PlugIn):
             fg_str = params.get("foreground", None)
             bg_str = params.get("background", None)
             if fg_str is not None:
-                Gimp.context_set_foreground(Gegl.Color.new(fg_str))
+                Gimp.context_set_foreground(Gegl.Color.new(parse_color(fg_str)))
             if bg_str is not None:
-                Gimp.context_set_background(Gegl.Color.new(bg_str))
+                Gimp.context_set_background(Gegl.Color.new(parse_color(bg_str)))
             return {"status": "success", "results": {"foreground": fg_str, "background": bg_str}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -2793,7 +2920,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 if color_str:
-                    Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                    Gimp.context_set_foreground(Gegl.Color.new(parse_color(color_str)))
                 Gimp.context_set_brush_size(line_width)
                 Gimp.context_set_opacity(100.0)
                 coords = [x1, y1, x2, y2]
@@ -2827,7 +2954,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 if color_str:
-                    Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                    Gimp.context_set_foreground(Gegl.Color.new(parse_color(color_str)))
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
                 Gimp.context_set_opacity(100.0)
@@ -2865,7 +2992,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 if color_str:
-                    Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                    Gimp.context_set_foreground(Gegl.Color.new(parse_color(color_str)))
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
                 Gimp.context_set_opacity(100.0)
@@ -2902,7 +3029,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
-                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                Gimp.context_set_foreground(Gegl.Color.new(parse_color(color_str)))
                 Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
                 Gimp.Selection.none(image)
             finally:
@@ -2930,7 +3057,7 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.context_push()
             try:
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
-                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                Gimp.context_set_foreground(Gegl.Color.new(parse_color(color_str)))
                 Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
                 Gimp.Selection.none(image)
             finally:
@@ -2962,8 +3089,8 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             Gimp.context_push()
             try:
-                Gimp.context_set_foreground(Gegl.Color.new(color1))
-                Gimp.context_set_background(Gegl.Color.new(color2))
+                Gimp.context_set_foreground(Gegl.Color.new(parse_color(color1)))
+                Gimp.context_set_background(Gegl.Color.new(parse_color(color2)))
 
                 Gegl.init(None)
                 shadow_buf = drawable.get_shadow_buffer()
@@ -2972,8 +3099,8 @@ class MCPPlugin(Gimp.PlugIn):
                 op_name = "gegl:radial-gradient" if gradient_type == "radial" else "gegl:linear-gradient"
                 grad_node = graph.create_child(op_name)
                 try:
-                    grad_node.set_property("start-color", Gegl.Color.new(color1))
-                    grad_node.set_property("end-color",   Gegl.Color.new(color2))
+                    grad_node.set_property("start-color", Gegl.Color.new(parse_color(color1)))
+                    grad_node.set_property("end-color",   Gegl.Color.new(parse_color(color2)))
                 except Exception:
                     pass
                 if w > 0 and h > 0:
@@ -3058,7 +3185,7 @@ class MCPPlugin(Gimp.PlugIn):
             if cproc:
                 ccfg = cproc.create_config()
                 ccfg.set_property("layer", tl)
-                ccfg.set_property("color", Gegl.Color.new(color_str))
+                ccfg.set_property("color", Gegl.Color.new(parse_color(color_str)))
                 cproc.run(ccfg)
         except Exception:
             pass
@@ -3107,7 +3234,7 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             Gimp.context_push()
             try:
-                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                Gimp.context_set_foreground(Gegl.Color.new(parse_color(color_str)))
                 font_obj = self._resolve_font(font)
                 if font_obj is not None:
                     text_layer = self._create_text_layer_native(
@@ -3185,7 +3312,7 @@ class MCPPlugin(Gimp.PlugIn):
                     if proc:
                         cfg = proc.create_config()
                         cfg.set_property("layer", layer)
-                        cfg.set_property("color", Gegl.Color.new(new_color))
+                        cfg.set_property("color", Gegl.Color.new(parse_color(new_color)))
                         proc.run(cfg)
             finally:
                 image.undo_group_end()
@@ -3349,7 +3476,7 @@ class MCPPlugin(Gimp.PlugIn):
                 image.insert_layer(shadow_layer, None, src_pos + 1)
 
                 # 2. Fill shadow layer with shadow color, preserving alpha shape
-                Gimp.context_set_foreground(Gegl.Color.new(color_str))
+                Gimp.context_set_foreground(Gegl.Color.new(parse_color(color_str)))
                 shadow_layer.set_lock_alpha(True)
                 Gimp.Drawable.edit_fill(shadow_layer, Gimp.FillType.FOREGROUND)
                 shadow_layer.set_lock_alpha(False)
@@ -3676,7 +3803,7 @@ class MCPPlugin(Gimp.PlugIn):
             sheet = Gimp.Image.new(sheet_w, sheet_h, Gimp.ImageBaseType.RGBA)
             bg_layer = Gimp.Layer.new(sheet, "Background", sheet_w, sheet_h, Gimp.ImageType.RGBA_IMAGE, 100, Gimp.LayerMode.NORMAL)
             sheet.insert_layer(bg_layer, None, 0)
-            Gimp.context_set_background(Gegl.Color.new("transparent"))
+            Gimp.context_set_background(Gegl.Color.new(parse_color("transparent")))
             Gimp.Drawable.edit_fill(bg_layer, Gimp.FillType.TRANSPARENT)
 
             for i, frame in enumerate(frames):
