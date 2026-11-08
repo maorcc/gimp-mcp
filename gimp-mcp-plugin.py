@@ -3620,7 +3620,16 @@ class MCPPlugin(Gimp.PlugIn):
                 # Name after the source image: a duplicate has no file, which
                 # made every export land on image.jpg / image.png.
                 gio_file = image.get_file()
+                source_path = gio_file.get_path() if gio_file else None
                 raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else f"image_{image_index}"
+                if source_path:
+                    # Never let an export overwrite the source file itself.
+                    source_path = os.path.normcase(os.path.abspath(source_path))
+                    while any(
+                        os.path.normcase(os.path.abspath(os.path.join(output_dir, f"{raw_name}.{ext}"))) == source_path
+                        for ext in ("jpg", "png")
+                    ):
+                        raw_name += "_web"
                 jpeg_path = os.path.join(output_dir, f"{raw_name}.jpg")
                 png_path  = os.path.join(output_dir, f"{raw_name}.png")
                 jpeg_size = self._export_to_path(dup, jpeg_path, "jpeg", jpeg_quality, True)
