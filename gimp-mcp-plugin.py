@@ -45,6 +45,18 @@ def exec_and_get_results(command, context):
     return output
 
 
+_NO_HISTORY_API = (
+    "GIMP 3.x does not expose {verb} execution to plug-ins. Its Python API "
+    "and PDB provide only undo *stack* management (undo_group_start/end, "
+    "undo_freeze/thaw, undo_disable/enable); no procedure performs {an} "
+    "{verb}. Use {keys} in GIMP instead. This plug-in wraps its operations "
+    "in undo groups, so a single {keys} applies to one whole operation."
+)
+
+UNDO_UNSUPPORTED = _NO_HISTORY_API.format(verb="undo", an="an", keys="Ctrl+Z")
+REDO_UNSUPPORTED = _NO_HISTORY_API.format(verb="redo", an="a", keys="Ctrl+Y")
+
+
 class MCPPlugin(Gimp.PlugIn):
     def __init__(self, host='localhost', port=9877):
         super().__init__()
@@ -3818,34 +3830,18 @@ class MCPPlugin(Gimp.PlugIn):
     def _undo(self, params):
         """Undo N steps."""
         try:
-            image_index = int(params.get("image_index", 0))
-            steps       = int(params.get("steps", 1))
-            image = self._get_image(image_index)
-            done = 0
-            for _ in range(steps):
-                if image.undo():
-                    done += 1
-                else:
-                    break
-            Gimp.displays_flush()
-            return {"status": "success", "results": {"steps_undone": done}}
+            # Gimp.Image has no undo() on GIMP 3.x -- calling it raised
+            # AttributeError. Nothing in the 1034-procedure PDB performs an
+            # undo either, so fail with an explanation rather than a crash.
+            return {"status": "error", "error": UNDO_UNSUPPORTED}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _redo(self, params):
         """Redo N steps."""
         try:
-            image_index = int(params.get("image_index", 0))
-            steps       = int(params.get("steps", 1))
-            image = self._get_image(image_index)
-            done = 0
-            for _ in range(steps):
-                if image.redo():
-                    done += 1
-                else:
-                    break
-            Gimp.displays_flush()
-            return {"status": "success", "results": {"steps_redone": done}}
+            # Same limitation as undo, see UNDO_UNSUPPORTED.
+            return {"status": "error", "error": REDO_UNSUPPORTED}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 

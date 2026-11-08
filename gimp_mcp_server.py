@@ -2574,13 +2574,18 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
 
 @mcp.tool()
 def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
-    """Undo one or more operations on an image.
+    """NOT SUPPORTED on GIMP 3.x -- this tool always fails.
 
-    Parameters:
-    - steps: Number of undo steps (default 1)
-    - image_index: Target image index (default 0)
+    GIMP 3.x exposes no undo execution to plug-ins: its Python API and PDB
+    provide only undo *stack* management, and no procedure performs an undo.
+    The call raises with an explanation rather than undoing anything.
 
-    Returns: {steps_undone}
+    Do not plan a workflow around being able to undo. Instead:
+    - work on a duplicate layer (duplicate_layer) and delete it to revert, or
+    - verify with get_state_snapshot before making a change hard to reverse.
+
+    A human can still press Ctrl+Z in GIMP; the plug-in wraps its operations
+    in undo groups, so one Ctrl+Z reverts one whole operation.
     """
     try:
         conn = get_gimp_connection()
@@ -2595,13 +2600,11 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
 
 @mcp.tool()
 def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
-    """Redo one or more previously undone operations on an image.
+    """NOT SUPPORTED on GIMP 3.x -- this tool always fails.
 
-    Parameters:
-    - steps: Number of redo steps (default 1)
-    - image_index: Target image index (default 0)
-
-    Returns: {steps_redone}
+    Same limitation as undo(): GIMP 3.x exposes no redo execution to
+    plug-ins. The call raises with an explanation rather than redoing
+    anything. A human can still press Ctrl+Y in GIMP.
     """
     try:
         conn = get_gimp_connection()
