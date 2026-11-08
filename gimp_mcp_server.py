@@ -2706,6 +2706,11 @@ def get_pixel_color(
     - layer_name: Layer to sample from; defaults to active layer
 
     Returns: {color_hex, color_rgb: [r, g, b], alpha}
+    - color_hex / color_rgb: 8-bit sRGB values (0-255), i.e. what is shown on
+      screen and written to PNG export. A pixel painted #ff5733 reads back as
+      "#ff5733" / [255, 87, 51].
+    - alpha: 0-255 (255 = fully opaque).
+    Reads only the given layer, not the composite of all visible layers.
     """
     try:
         conn = get_gimp_connection()
