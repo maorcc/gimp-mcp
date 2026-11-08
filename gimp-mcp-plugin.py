@@ -29,6 +29,7 @@ import signal
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
+TEMP_IMAGE_PARASITE = "gimp-mcp-temp"  # Marks images the plug-in creates for one command
 
 
 def N_(message): return message
@@ -523,7 +524,8 @@ class MCPPlugin(Gimp.PlugIn):
             # Extract parameters
             max_width = params.get("max_width")
             max_height = params.get("max_height")
-            
+            image_index = params.get("image_index", 0)
+
             # Extract region parameters if provided
             region = params.get("region", {})
             
@@ -552,184 +554,138 @@ class MCPPlugin(Gimp.PlugIn):
             scaled_to_width = region.get("max_width")  # Region scaling uses max_width/max_height
             scaled_to_height = region.get("max_height")
 
-            # Get the current images
-            images = Gimp.get_images()
-            if not images:
+            # Select the requested image (default 0 = most recently active);
+            # int() would turn -0.5 into a valid 0, so require an integer
+            if isinstance(image_index, bool) or not isinstance(image_index, int) or image_index < 0:
                 return {
                     "status": "error",
-                    "error": "No images are currently open in GIMP"
+                    "error": f"image_index must be a non-negative integer, got {image_index!r}"
                 }
-            
-            # Use the first image (most recently active)
-            original_image = images[0]
-            
+            try:
+                original_image = self._get_image(image_index)
+            except RuntimeError as e:
+                return {
+                    "status": "error",
+                    "error": str(e)
+                }
+
             # Get original image dimensions
             orig_img_width = original_image.get_width()
             orig_img_height = original_image.get_height()
-            
-            # Determine working image and region
-            working_image = None
-            should_delete_working = False
-            
-            # Case 1: Region selection
-            if any(param is not None for param in [origin_x, origin_y, region_width, region_height]):
-                print("Processing region extraction...")
-                
+
+            # PNG export flattens visible layers only; with none visible it falls back
+            # to a hidden layer's pixels, so report an error instead (groups count only
+            # when they contain a visible layer)
+            def has_visible(items):
+                for item in items:
+                    if not item.get_visible():
+                        continue
+                    if not item.is_group() or has_visible(item.get_children()):
+                        return True
+                return False
+
+            if not has_visible(original_image.get_layers()):
+                return {
+                    "status": "error",
+                    "error": "No visible layers in the image (all layers are hidden or the image has no layers)"
+                }
+
+            # Validate region before creating any temporary image
+            region_requested = any(param is not None for param in [origin_x, origin_y, region_width, region_height])
+            if region_requested:
                 # Validate region parameters
                 if origin_x is None or origin_y is None or region_width is None or region_height is None:
                     return {
                         "status": "error",
                         "error": "For region selection, all parameters are required: origin_x, origin_y, width, height"
                     }
-                
+
                 # Validate region bounds
-                if (origin_x < 0 or origin_y < 0 or 
-                    origin_x + region_width > orig_img_width or 
+                if (origin_x < 0 or origin_y < 0 or
+                    origin_x + region_width > orig_img_width or
                     origin_y + region_height > orig_img_height):
                     return {
                         "status": "error",
                         "error": f"Region bounds invalid. Image size: {orig_img_width}x{orig_img_height}, "
                                f"requested region: ({origin_x},{origin_y}) {region_width}x{region_height}"
                     }
-                
-                # Create new image with the region
-                working_image = Gimp.Image.new(region_width, region_height, original_image.get_base_type())
-                should_delete_working = True
-                
-                # Copy the region from original image
-                # First, select the region in the original image
-                original_image.select_rectangle(Gimp.ChannelOps.REPLACE, origin_x, origin_y, region_width, region_height)
-                
-                # Get the active layer from original image
-                orig_layers = original_image.get_layers()
-                if not orig_layers:
-                    return {
-                        "status": "error",
-                        "error": "No layers found in original image"
-                    }
-                
-                # Create a new layer in working image
-                # In GIMP 3.0+, use the image's base type instead of layer.get_image_type()
-                try:
-                    # Try to get layer type - fallback to image base type
-                    if hasattr(orig_layers[0], 'get_type'):
-                        layer_type = orig_layers[0].get_type()
-                    else:
-                        # Use image base type as fallback
-                        layer_type = original_image.get_base_type()
-                except AttributeError:
-                    # Final fallback - use RGB
-                    layer_type = Gimp.ImageBaseType.RGB
-                
-                new_layer = Gimp.Layer.new(working_image, 'Region', region_width, region_height, 
-                                         layer_type, 100, Gimp.LayerMode.NORMAL)
-                working_image.insert_layer(new_layer, None, 0)
-                
-                # Copy and paste the selection
-                Gimp.edit_copy([orig_layers[0]])
-                floating_sel = Gimp.edit_paste(new_layer, True)[0]
-                Gimp.floating_sel_anchor(floating_sel)
-                
-                # Clear selection
-                try:
-                    # Try different methods to clear selection based on GIMP version
-                    if hasattr(original_image, 'select_none'):
-                        original_image.select_none()
-                    else:
-                        # Use Gimp.Selection.none() for GIMP 3.0+
-                        Gimp.Selection.none(original_image)
-                except (AttributeError, RuntimeError) as e:
-                    print(f"Warning: Could not clear selection: {e}")
-                
-            else:
-                # Case 2: Full image
-                print("Processing full image...")
-                working_image = original_image
-                should_delete_working = False
-            
-            # Now handle scaling if needed
-            final_image = working_image
-            should_delete_final = should_delete_working
-            
-            # Calculate target dimensions
-            current_width = working_image.get_width()
-            current_height = working_image.get_height()
-            target_width = current_width
-            target_height = current_height
-            
-            # Determine scaling target
-            if scaled_to_width is not None and scaled_to_height is not None:
-                # Region scaling - use scaled_to dimensions
-                max_w, max_h = scaled_to_width, scaled_to_height
-            elif max_width is not None and max_height is not None:
-                # Full image scaling - use max dimensions
-                max_w, max_h = max_width, max_height
-            else:
-                max_w = max_h = None
-            
-            # Apply center inside scaling if target dimensions provided
-            if max_w is not None and max_h is not None:
-                # Calculate center inside scaling
-                aspect_ratio = current_width / current_height
-                max_aspect_ratio = max_w / max_h
-                
-                if aspect_ratio > max_aspect_ratio:
-                    # Width is the limiting factor
-                    target_width = max_w
-                    target_height = int(max_w / aspect_ratio)
-                else:
-                    # Height is the limiting factor
-                    target_height = max_h
-                    target_width = int(max_h * aspect_ratio)
-                
-                print(f"Scaling from {current_width}x{current_height} to {target_width}x{target_height}")
-                
-                # Scale the image if dimensions changed
-                if target_width != current_width or target_height != current_height:
-                    # Create scaled image
-                    final_image = working_image.duplicate()
-                    should_delete_final = True
-                    
-                    # Scale the image with timeout consideration for large operations
-                    scaling_ratio = (target_width * target_height) / (current_width * current_height)
-                    if scaling_ratio > LARGE_SCALING_THRESHOLD:  # Scaling up significantly
-                        print(f"Warning: Large scaling operation detected (ratio: {scaling_ratio:.2f}). This may take time.")
-                    
-                    try:
-                        final_image.scale(target_width, target_height)
-                    except (RuntimeError) as scale_error:
-                        # Clean up and return error for scaling failures
-                        if should_delete_final:
-                            try:
-                                final_image.delete()
-                            except (AttributeError, RuntimeError):
-                                pass
-                        raise RuntimeError(f"Failed to scale image from {current_width}x{current_height} to {target_width}x{target_height}: {scale_error}")
-        
-            # Create a temporary file for export
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
-            os.close(temp_fd)  # Close the file descriptor as GIMP will handle the file
-            
+
+            # Render the visible composite of the region or the full image into a
+            # temporary image, deleted in finally. Filters crossing the region edge
+            # apply before the cut, so a region equals the same rectangle of the full
+            # bitmap; only one layer is copied, and the user's selection and
+            # clipboard stay untouched
+            final_image = None
+            temp_path = None
+
             try:
+                if region_requested:
+                    print("Processing region extraction...")
+                    final_image = self._render_visible(original_image, origin_x, origin_y,
+                                                       region_width, region_height)
+                else:
+                    print("Processing full image...")
+                    final_image = self._render_visible(original_image, 0, 0,
+                                                       orig_img_width, orig_img_height)
+
+                # Calculate target dimensions
+                current_width = final_image.get_width()
+                current_height = final_image.get_height()
+                target_width = current_width
+                target_height = current_height
+                
+                # Determine scaling target
+                if scaled_to_width is not None and scaled_to_height is not None:
+                    # Region scaling - use scaled_to dimensions
+                    max_w, max_h = scaled_to_width, scaled_to_height
+                elif max_width is not None and max_height is not None:
+                    # Full image scaling - use max dimensions
+                    max_w, max_h = max_width, max_height
+                else:
+                    max_w = max_h = None
+                
+                # Apply center inside scaling if target dimensions provided
+                if max_w is not None and max_h is not None:
+                    # Calculate center inside scaling
+                    aspect_ratio = current_width / current_height
+                    max_aspect_ratio = max_w / max_h
+                    
+                    if aspect_ratio > max_aspect_ratio:
+                        # Width is the limiting factor
+                        target_width = max_w
+                        target_height = max(1, int(max_w / aspect_ratio))
+                    else:
+                        # Height is the limiting factor
+                        target_height = max_h
+                        target_width = max(1, int(max_h * aspect_ratio))
+                    
+                    print(f"Scaling from {current_width}x{current_height} to {target_width}x{target_height}")
+
+                    # Scale the image if dimensions changed
+                    if target_width != current_width or target_height != current_height:
+                        # Scale the image with timeout consideration for large operations
+                        scaling_ratio = (target_width * target_height) / (current_width * current_height)
+                        if scaling_ratio > LARGE_SCALING_THRESHOLD:  # Scaling up significantly
+                            print(f"Warning: Large scaling operation detected (ratio: {scaling_ratio:.2f}). This may take time.")
+
+                        try:
+                            final_image.scale(target_width, target_height)
+                        except (RuntimeError) as scale_error:
+                            raise RuntimeError(f"Failed to scale image from {current_width}x{current_height} to {target_width}x{target_height}: {scale_error}")
+
+                # Create a temporary file for export
+                temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
+                os.close(temp_fd)  # Close the file descriptor as GIMP will handle the file
+            
                 # Export the final image as PNG
                 # Get all layers - we'll export the flattened image
                 layers = final_image.get_layers()
                 if not layers:
                     return {
-                        "status": "error", 
+                        "status": "error",
                         "error": "No layers found in the processed image"
                     }
-                
-                # For PNG export, we can use all layers or the active layer
-                try:
-                    drawable = (final_image.get_selected_layers() or final_image.get_layers() or [None])[0]
-                except (AttributeError, RuntimeError):
-                    # If get_active_layer doesn't exist or fails, use the first layer
-                    drawable = layers[0]
-                
-                if not drawable:
-                    drawable = layers[0]
-                
+
                 # Export the image to PNG
                 try:
                     # In GIMP 3.0, use the simplified export approach
@@ -747,16 +703,7 @@ class MCPPlugin(Gimp.PlugIn):
                     export_config = export_proc.create_config()
                     export_config.set_property('image', final_image)
                     export_config.set_property('file', file_obj)
-                    # Try different property names that might exist
-                    try:
-                        export_config.set_property('drawable', drawable)
-                    except Exception:
-                        try:
-                            export_config.set_property('drawables', [drawable])
-                        except Exception:
-                            # Some export procedures might not need drawable specification
-                            pass
-                    
+
                     result = export_proc.run(export_config)
                     print(f"Export result: {result}")
                     
@@ -821,22 +768,17 @@ class MCPPlugin(Gimp.PlugIn):
                 }
                 
             finally:
-                # Clean up temporary images
-                if should_delete_final and final_image != working_image:
+                # Clean up the temporary image
+                if final_image is not None:
                     try:
                         final_image.delete()
                     except (AttributeError, RuntimeError) as e:
-                        print(f"Warning: Failed to delete final temporary image: {e}")
-                if should_delete_working and working_image != original_image:
-                    try:
-                        working_image.delete()
-                    except (AttributeError, RuntimeError) as e:
-                        print(f"Warning: Failed to delete working temporary image: {e}")
+                        print(f"Warning: Failed to delete temporary image: {e}")
                         
                 # Clean up the temporary file
-                if os.path.exists(temp_path):
+                if temp_path and os.path.exists(temp_path):
                     os.unlink(temp_path)
-                    
+
         except (RuntimeError, AttributeError, OSError, ValueError) as e:
             return {
                 "status": "error",
@@ -850,7 +792,7 @@ class MCPPlugin(Gimp.PlugIn):
             print("Getting current image metadata...")
             
             # Get the current images
-            images = Gimp.get_images()
+            images = self._open_images()
             if not images:
                 return {
                     "status": "error",
@@ -1149,7 +1091,7 @@ class MCPPlugin(Gimp.PlugIn):
             
             # Current session information
             try:
-                images = Gimp.get_images()
+                images = self._open_images()
                 gimp_info["session"] = {
                     "num_open_images": len(images),
                     "has_open_images": len(images) > 0,
@@ -1539,9 +1481,35 @@ class MCPPlugin(Gimp.PlugIn):
     # SHARED HELPERS
     # =========================================================================
 
+    def _open_images(self):
+        """Return Gimp.get_images() without the temporary images of running commands.
+
+        A new image goes first in Gimp.get_images(), so a temporary image would
+        shift the image_index of every other image while it exists.
+        """
+        return [image for image in Gimp.get_images()
+                if image.get_parasite(TEMP_IMAGE_PARASITE) is None]
+
+    def _render_visible(self, image, x, y, width, height):
+        """Return a temporary image holding the visible composite of a rectangle of image.
+
+        The caller deletes it; until then _open_images skips it.
+        """
+        temp = Gimp.Image.new(width, height, Gimp.ImageBaseType.RGB)
+        try:
+            temp.attach_parasite(Gimp.Parasite.new(TEMP_IMAGE_PARASITE, 0, b"1"))
+            layer = Gimp.Layer.new_from_visible(image, temp, "visible")
+            temp.insert_layer(layer, None, 0)
+            layer.set_offsets(-x, -y)
+            layer.resize_to_image_size()
+        except Exception:
+            temp.delete()
+            raise
+        return temp
+
     def _get_image(self, image_index):
-        """Return the image at image_index from Gimp.get_images(), raise if none open."""
-        images = Gimp.get_images()
+        """Return the image at image_index from _open_images(), raise if none open."""
+        images = self._open_images()
         if not images:
             raise RuntimeError("No images are currently open in GIMP")
         if image_index >= len(images):
@@ -1774,7 +1742,7 @@ class MCPPlugin(Gimp.PlugIn):
             name_pattern = params.get("name_pattern", "{name}")
             image_index  = params.get("image_index", None)
 
-            images = Gimp.get_images()
+            images = self._open_images()
             if not images:
                 return {"status": "error", "error": "No images open"}
 
@@ -3645,7 +3613,7 @@ class MCPPlugin(Gimp.PlugIn):
             height          = params.get("height", None)
             scale_factor    = params.get("scale_factor", None)
             maintain_aspect = bool(params.get("maintain_aspect", True))
-            images  = Gimp.get_images()
+            images  = self._open_images()
             results = []
             for img in images:
                 src_w = img.get_width()
@@ -3692,7 +3660,7 @@ class MCPPlugin(Gimp.PlugIn):
             import math
 
             if source == "images":
-                frames = Gimp.get_images()
+                frames = self._open_images()
             else:
                 src_image = self._get_image(image_index)
                 frames = src_image.get_layers()
@@ -3805,7 +3773,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _list_images(self, params):
         """List all open images."""
         try:
-            images = Gimp.get_images()
+            images = self._open_images()
             image_list = []
             base_type_map = {
                 Gimp.ImageBaseType.RGB:     "RGB",

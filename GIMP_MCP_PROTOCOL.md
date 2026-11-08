@@ -282,6 +282,7 @@ image = get_image_bitmap()
 **Purpose:** Get the current image as a base64-encoded PNG bitmap with support for region extraction and scaling
 
 **Parameters:**
+- `image_index` (integer, optional): Index of the image to capture as `list_images` numbers it (default 0); the snapshot renders the visible composite, layer filters included, and returns an error when no layer is visible
 - `max_width` (integer, optional): Maximum width for full image scaling (center inside)
 - `max_height` (integer, optional): Maximum height for full image scaling (center inside)
 - `origin_x` (integer, optional): X coordinate for region extraction (requires all region params)

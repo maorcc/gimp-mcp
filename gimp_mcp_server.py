@@ -180,7 +180,7 @@ def new_canvas(
 
 
 @mcp.tool()
-def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None) -> Image:
+def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None, image_index: int = 0) -> Image:
     """Get the current open image in GIMP as an Image object with optional scaling and region selection.
 
     No size restrictions — pass any max_width/max_height you need.
@@ -191,6 +191,7 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
     2. Region extraction with optional scaling (pass region dict)
 
     Parameters:
+    - image_index: Which open image to fetch (default: 0 = most recent)
     - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved).
       Omit for full resolution.
     - region: Dictionary with keys:
@@ -220,7 +221,7 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
         conn = get_gimp_connection()
         
         # Build parameters for the bitmap request
-        params = {}
+        params = {"image_index": image_index}
         if max_width is not None:
             params["max_width"] = max_width
         if max_height is not None:
