@@ -93,6 +93,9 @@ class MCPPlugin(Gimp.PlugIn):
         self.context = {}
         exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
+        # One client thread per connection; a retry after a client-side timeout
+        # would otherwise drive the libgimp wire protocol concurrently and crash
+        self.command_lock = threading.Lock()
 
     def do_set_i18n(self, procname):
         # Plugin has no translations; tell GIMP so it stops logging
@@ -263,7 +266,8 @@ class MCPPlugin(Gimp.PlugIn):
             request = str(buffer)
         
         # print(f"Parsed request: {request}")
-        response = self.execute_command(request)
+        with self.command_lock:
+            response = self.execute_command(request)
         print(f"response type: {type(response)}")
         
         if isinstance(response, dict):
@@ -284,7 +288,7 @@ class MCPPlugin(Gimp.PlugIn):
         return
 
     def execute_command(self, request):
-        """Execute commands in GIMP's main thread."""
+        """Run one command. Called from client threads; command_lock keeps commands from overlapping."""
         try:
             if request == "disable_auto_disconnect":
                 self.auto_disconnect_client = False

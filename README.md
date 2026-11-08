@@ -10,7 +10,7 @@
 
 ![GIMP MCP in action — AI agent driving GIMP through natural language](docs/mcpInAction.gif)
 
-Full demo (with audio): https://github.com/maorcc/gimp-mcp/raw/main/docs/demo.mp4
+Full demo (with audio): https://github.com/gimp-mcp/gimp-mcp/raw/main/docs/demo.mp4
 
 *AI agent using GIMP MCP to remove a background, edit a character's expression, and verify results — all through natural language via Claude*
 
@@ -24,7 +24,7 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 
 - The AI can *see* the image at any point in the workflow without saving to disk (`get_state_snapshot`)
 - Supports fully autonomous multi-step pipelines: open → edit → verify → refine → export
-- 56 dedicated tool commands covering every major GIMP operation
+- 79 dedicated tool commands covering every major GIMP operation
 - Fully compatible with GIMP 3.2.x (all breaking API changes resolved)
 
 ## Key Features
@@ -32,8 +32,8 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 | | |
 |---|---|
 | 👁️ **Live Visual Feedback** | `get_state_snapshot` returns a PNG preview mid-workflow so the AI verifies each step |
-| 🎨 **56 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
-| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (56/56 passing) |
+| 🎨 **79 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
+| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (59/59 passing) |
 | 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
 | 🖼️ **Region Snapshots** | Zoom into any area for detail verification (face, mouth, corner, etc.) |
 | 🔌 **Universal MCP** | Works with Claude Desktop, Claude Code, Gemini CLI, PydanticAI, and more |
@@ -73,7 +73,7 @@ The AI removes the background, takes a snapshot to inspect the result, detects r
 ## Prerequisites
 
 - **GIMP 3.2+** — tested on GIMP 3.2.2 (Windows, macOS, Linux)
-- **Python 3.8+** — for the MCP server
+- **Python 3.11+** — for the MCP server
 - **uv** — Python package manager (`pip install uv`)
 - **MCP-compatible AI client** — Claude Desktop, Claude Code, Gemini CLI, PydanticAI, etc.
 
@@ -84,7 +84,7 @@ The AI removes the background, takes a snapshot to inspect the result, detects r
 ### 1. Install Dependencies
 
 ```bash
-git clone https://github.com/maorcc/gimp-mcp.git
+git clone https://github.com/gimp-mcp/gimp-mcp.git
 cd gimp-mcp
 uv sync
 ```
@@ -219,6 +219,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | `auto_levels` | Auto-stretch levels |
 | `desaturate` | Convert to grayscale (keep RGB mode) |
 | `invert_colors` | Invert all channels |
+| `convert_color_mode` | Convert between RGB, grayscale, and indexed modes |
 | `sharpen` | Unsharp mask sharpening |
 | `blur` | Gaussian blur |
 | `denoise` | Noise reduction |
@@ -229,9 +230,11 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | `scale_image` | Scale to exact dimensions |
 | `scale_to_fit` | Scale within bounding box (aspect-safe) |
 | `crop_to_rect` | Crop to rectangle |
+| `crop_to_selection` | Crop canvas to the current selection bounds |
 | `rotate_image` | Rotate 90/180/270 or arbitrary angle |
 | `flip_image` | Flip horizontal or vertical |
 | `resize_canvas` | Resize canvas without scaling content |
+| `warp_region` | Warp / liquify a region by pushing pixels in a direction |
 
 ### ✂️ Selections
 | Tool | Description |
@@ -291,9 +294,27 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 |---|---|
 | `open_image` | Open image file |
 | `export_image` | Export to PNG, JPEG, BMP, TIFF |
+| `save_xcf` | Save as GIMP XCF (preserves layers and metadata) |
 | `new_canvas` | Create blank canvas |
 | `close_image` | Close image |
 | `list_images` | List open images |
+| `set_active_image` | Bring a specific open image to the front |
+
+### 📦 Batch & Multi-Format Export
+| Tool | Description |
+|---|---|
+| `batch_export` | Export all open images (or one) to a directory |
+| `batch_resize` | Resize all open images to a common size |
+| `export_web_optimized` | Export as JPEG and PNG, keeping the smaller |
+| `export_icon_sizes` | Export a full Android or iOS icon set |
+| `export_social_media_kit` | Export resized versions for social media platforms |
+| `export_sprite_sheet` | Combine frames into a sprite sheet PNG |
+
+### ↩️ History
+| Tool | Description |
+|---|---|
+| `undo` | Undo one or more operations on an image |
+| `redo` | Redo previously undone operations |
 
 ### 🔍 Info & Context
 | Tool | Description |
@@ -304,6 +325,13 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | `get_pixel_color` | Color value at a specific pixel |
 | `get_histogram` | Histogram data for a channel |
 | `get_selection_bounds` | Current selection bounds |
+
+### 🔌 Connection & Raw API
+| Tool | Description |
+|---|---|
+| `check_server` | Check the GIMP plugin socket is reachable |
+| `restart_server` | Drop and re-establish the connection to the plugin |
+| `call_api` | Run arbitrary Python-Fu code inside GIMP (escape hatch for anything not covered above) |
 
 ---
 
@@ -350,15 +378,17 @@ See [`bg_remove_iterative.py`](bg_remove_iterative.py) for a complete example. T
 
 | Script | Description |
 |---|---|
-| [`run_tests.py`](run_tests.py) | 56-test suite — run against your GIMP to verify all tools work |
+| [`run_tests.py`](run_tests.py) | 59-test suite — run against your GIMP to verify all tools work |
 | [`bg_remove_iterative.py`](bg_remove_iterative.py) | Iterative BG removal with snapshot checkpoints |
 | [`bg_remove.py`](bg_remove.py) | Simple single-pass background removal |
 | [`agent_edit_demo.py`](agent_edit_demo.py) | Full pipeline: open → remove BG → edit expression → export |
+| [`tests/test_add_text_metadata.py`](tests/test_add_text_metadata.py) | Regression test: `add_text` returns real layer metadata |
+| [`tests/continuous_edit_test/continuous_edit_test.py`](tests/continuous_edit_test/continuous_edit_test.py) | End-to-end agent editing loop: BG removal, selective recolor, composite |
 
 Run the test suite to verify your setup:
 ```bash
 python run_tests.py
-# Expected: 56/56 PASSED
+# Expected: 59/59 PASSED
 ```
 
 ---
@@ -403,7 +433,7 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 
 ### "Could not connect to GIMP"
 - GIMP must be running with an image open
-- Start the MCP server: **Tools > Start MCP Server**
+- Start the MCP server: **Tools > MCP > Start MCP Server**
 - Check port 9877 is not blocked by firewall
 
 ### Plugin Not Visible in GIMP
@@ -439,7 +469,6 @@ GIMP_MCP_DEBUG=1 uv run --directory /path/to/gimp-mcp gimp_mcp_server.py
 ## Future Enhancements
 
 - **📚 Recipe Collection**: Reusable workflow templates (portrait cleanup, product photo, etc.)
-- **↩️ Undo System**: History management and rollback via MCP
 - **🚀 Dynamic Discovery**: Auto-generate MCP tools from GIMP's full PDB procedure database
 - **🔒 Security**: Sandboxed execution for untrusted command inputs
 - **⚡ Performance**: Optimized bitmap transfer for large images
@@ -467,3 +496,7 @@ To bump the pinned hook versions later:
 ```bash
 uv run pre-commit autoupdate
 ```
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
