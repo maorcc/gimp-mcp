@@ -30,6 +30,8 @@ class GimpConnection:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(10)
             self.sock.connect((self.host, self.port))
+            # 10s was too short for flattening/scaling multi-layer PSDs and 16-bit renders
+            self.sock.settimeout(300)
             logger.info(f"Connected to GIMP at {self.host}:{self.port}")
         except Exception as e:
             self.sock = None
@@ -85,7 +87,7 @@ def reset_gimp_connection():
     _gimp_connection = None
 
 # MCP server
-mcp = FastMCP("GimpMCP", description="GIMP integration through MCP — with new_canvas, check_server, restart_server")
+mcp = FastMCP("GimpMCP", instructions="GIMP integration through MCP — with new_canvas, check_server, restart_server")
 
 @mcp.tool()
 def check_server(ctx: Context) -> dict:
@@ -2704,6 +2706,11 @@ def get_pixel_color(
     - layer_name: Layer to sample from; defaults to active layer
 
     Returns: {color_hex, color_rgb: [r, g, b], alpha}
+    - color_hex / color_rgb: 8-bit sRGB values (0-255), i.e. what is shown on
+      screen and written to PNG export. A pixel painted #ff5733 reads back as
+      "#ff5733" / [255, 87, 51].
+    - alpha: 0-255 (255 = fully opaque).
+    Reads only the given layer, not the composite of all visible layers.
     """
     try:
         conn = get_gimp_connection()
