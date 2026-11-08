@@ -251,7 +251,7 @@ class MCPPlugin(Gimp.PlugIn):
         return
 
     def execute_command(self, request):
-        """Execute commands in GIMP's main thread."""
+        """Run one command. Called from client threads; command_lock keeps commands from overlapping."""
         try:
             if request == "disable_auto_disconnect":
                 self.auto_disconnect_client = False
