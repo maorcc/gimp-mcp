@@ -54,11 +54,41 @@ class MCPPlugin(Gimp.PlugIn):
         self.socket = None
         self.server_thread = None
         self.context = {}
+        # image_id -> Gimp.Display for displays this plugin created.
+        # GIMP 3.x exposes no way to enumerate displays or map one back to
+        # an image (Gimp.Display has only an 'id' property), so we remember.
+        self._displays = {}
         exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
         # One client thread per connection; a retry after a client-side timeout
         # would otherwise drive the libgimp wire protocol concurrently and crash
         self.command_lock = threading.Lock()
+
+    def _track_display(self, image, display):
+        """Remember the display created for an image."""
+        try:
+            if display is not None:
+                self._displays[image.get_id()] = display
+        except Exception:
+            pass
+        return display
+
+    def _get_tracked_display(self, image):
+        """Return the live display for an image, or None.
+
+        Entries go stale when the user closes a window in the GIMP UI, so
+        the id is revalidated before the display is handed back.
+        """
+        try:
+            display = self._displays.get(image.get_id())
+            if display is None:
+                return None
+            if not Gimp.Display.id_is_valid(display.get_id()):
+                self._displays.pop(image.get_id(), None)
+                return None
+            return display
+        except Exception:
+            return None
 
     def do_set_i18n(self, procname):
         # Plugin has no translations; tell GIMP so it stops logging
@@ -1474,7 +1504,7 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_background(bg_color)
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
 
-            Gimp.Display.new(image)
+            self._track_display(image, Gimp.Display.new(image))
             Gimp.displays_flush()
 
             print(f"New canvas created: {width}x{height} {color_mode} fill={fill}")
@@ -1662,7 +1692,7 @@ class MCPPlugin(Gimp.PlugIn):
             image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gio_file)
             if image is None:
                 return {"status": "error", "error": f"Could not open file: {file_path}"}
-            display = Gimp.Display.new(image)
+            display = self._track_display(image, Gimp.Display.new(image))
             Gimp.displays_flush()
             base_type = image.get_base_type()
             mode_map = {
@@ -3801,15 +3831,15 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             image_index = int(params.get("image_index", 0))
             image = self._get_image(image_index)
-            displays = Gimp.get_displays()
-            for display in displays:
-                try:
-                    if display.get_image().get_id() == image.get_id():
-                        Gimp.set_default_context()
-                        display.present()
-                        break
-                except Exception:
-                    pass
+            display = self._get_tracked_display(image)
+            if display is None:
+                return {"status": "error",
+                        "error": ("No display is tracked for image index "
+                                  f"{image_index}. GIMP 3.x cannot enumerate "
+                                  "displays, so only images opened through "
+                                  "new_canvas or open_image can be raised. "
+                                  "Switch to it in the GIMP UI instead.")}
+            display.present()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success", "image_id": image.get_id()}}
         except Exception as e:
@@ -3908,15 +3938,25 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("image", image)
                     cfg.set_property("file", gio_file)
                     proc.run(cfg)
-            # Delete all displays for this image
-            for display in Gimp.get_displays():
-                try:
-                    if display.get_image().get_id() == image.get_id():
-                        Gimp.Display.delete(display)
-                except Exception:
-                    pass
-            image.delete()
-            return {"status": "success", "results": {"status": "success"}}
+            # Deleting the image's display frees the image with it. A plain
+            # image.delete() returns False and no-ops while a display is
+            # still attached, so the display must go first.
+            image_id = image.get_id()
+            display = self._get_tracked_display(image)
+            if display is not None:
+                display.delete()
+                self._displays.pop(image_id, None)
+                Gimp.displays_flush()
+                return {"status": "success", "results": {"status": "success"}}
+            # Untracked (opened by hand in the GIMP UI). Without a display
+            # handle this only works for a display-less image.
+            if image.delete():
+                return {"status": "success", "results": {"status": "success"}}
+            return {"status": "error",
+                    "error": ("Could not close image index "
+                              f"{image_index}: it has a display that this "
+                              "plugin did not create, and GIMP 3.x cannot "
+                              "enumerate displays. Close it in the GIMP UI.")}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
