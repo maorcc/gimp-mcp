@@ -25,6 +25,7 @@ SUCCESS, EXECUTION_ERROR = "SUCCESS", "EXECUTION_ERROR"
 
 
 def install_gi_stub():
+    """Install a fake gi.repository with just enough of Gimp/GLib/GObject to import the plug-in."""
     gi = types.ModuleType("gi")
     gi.require_version = lambda *a, **k: None
     repository = types.ModuleType("gi.repository")
@@ -69,6 +70,7 @@ def install_gi_stub():
 
 
 def load_plugin():
+    """Import gimp-mcp-plugin.py as a module (its file name has a hyphen)."""
     spec = importlib.util.spec_from_file_location("gimp_mcp_plugin", PLUGIN)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -76,18 +78,25 @@ def load_plugin():
 
 
 class FakeProcedure:
+    """Stand-in for Gimp.Procedure; handlers' return values are just the PDB status."""
+
     @staticmethod
     def new_return_values(status, error):
+        """Return the status so the test can assert on it."""
         return status
 
 
 class FakeConfig:
+    """Stand-in for Gimp.ProcedureConfig; always non-interactive (no Gimp.message)."""
+
     @staticmethod
     def get_property(name):
-        return 1  # Gimp.RunMode.NONINTERACTIVE
+        """Return Gimp.RunMode.NONINTERACTIVE for the run-mode property."""
+        return 1
 
 
 def free_port():
+    """Return a localhost TCP port that is currently free."""
     with socket.socket() as s:
         s.bind(("localhost", 0))
         return s.getsockname()[1]
@@ -104,6 +113,7 @@ def start_server(mod, port):
 
 
 def stop_server(server, thread):
+    """Stop the server's accept loop and wait for the thread to exit."""
     server.running = False
     thread.join(timeout=5)
 
@@ -118,6 +128,7 @@ def menu_click(mod, handler_name):
 
 
 def main():
+    """Run every scenario, print PASS/FAIL, and return the process exit code."""
     install_gi_stub()
     mod = load_plugin()
     port = free_port()
@@ -125,6 +136,7 @@ def main():
     failures = []
 
     def expect(label, cond, detail):
+        """Record a failure (label and detail) when cond is false."""
         if not cond:
             failures.append(f"{label}: {detail}")
 
@@ -135,8 +147,11 @@ def main():
 
     # 2. Restart from the menu, several times; the server must keep answering.
     for i in range(3):
+        old_socket = server.socket
         status, msg = menu_click(mod, "_run_restart")
         expect(f"restart #{i + 1}", status == SUCCESS and "restarted" in msg, f"{status}: {msg}")
+        expect(f"socket replaced by restart #{i + 1}", server.socket is not old_socket,
+               "listener was not re-bound")
         expect(f"probe after restart #{i + 1}",
                mod.probe_listener("localhost", port) == "mcp", "server stopped answering")
     expect("server still running after restarts", server.running and thread.is_alive(),
@@ -157,6 +172,7 @@ def main():
     other.listen(4)
 
     def junk_replies():
+        """Act as an unrelated program: answer every connection with non-MCP JSON."""
         while True:
             try:
                 conn, _ = other.accept()
@@ -176,6 +192,20 @@ def main():
     # 5. In-process restart_server on a plug-in with no server is an error, not a crash.
     res = mod.MCPPlugin()._restart_server()
     expect("in-process restart without server", res.get("status") == "error", res)
+
+    # 6. A failed re-bind reports an error and stops the server cleanly.
+    server, thread = start_server(mod, free_port())
+
+    def failing_bind():
+        """Simulate the port no longer being bindable during a restart."""
+        raise OSError("simulated bind failure")
+
+    server._bind_listener = failing_bind
+    res = server._restart_server()
+    expect("failed rebind reports error", res.get("status") == "error", res)
+    thread.join(timeout=5)
+    expect("failed rebind stops server", not server.running and not thread.is_alive(),
+           "server still running after failed rebind")
 
     if failures:
         print("FAIL: test_menu_check_restart")
