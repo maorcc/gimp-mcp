@@ -87,12 +87,15 @@ class FakeProcedure:
 
 
 class FakeConfig:
-    """Stand-in for Gimp.ProcedureConfig; always non-interactive (no Gimp.message)."""
+    """Stand-in for Gimp.ProcedureConfig with a fixed run mode."""
 
-    @staticmethod
-    def get_property(name):
-        """Return Gimp.RunMode.NONINTERACTIVE for the run-mode property."""
-        return 1
+    def __init__(self, run_mode=1):
+        """run_mode is a Gimp.RunMode value; non-interactive (1) by default."""
+        self.run_mode = run_mode
+
+    def get_property(self, name):
+        """Return the run mode for the run-mode property."""
+        return self.run_mode
 
 
 def free_port():
@@ -144,6 +147,18 @@ def main():
     server, thread = start_server(mod, port)
     status, msg = menu_click(mod, "_run_check")
     expect("check while running", "RUNNING" in msg and str(port) in msg, msg)
+
+    # 1b. Interactive run (a real menu click): the real _report shows the
+    # result in GIMP through Gimp.message.
+    shown = []
+    real_message = mod.Gimp.message
+    mod.Gimp.message = shown.append
+    try:
+        mod.MCPPlugin()._run_check(FakeProcedure(), FakeConfig(run_mode=0), None)
+    finally:
+        mod.Gimp.message = real_message
+    expect("interactive check shows Gimp.message",
+           len(shown) == 1 and "RUNNING" in shown[0] and str(port) in shown[0], shown)
 
     # 2. Restart from the menu, several times; the server must keep answering.
     for i in range(3):
