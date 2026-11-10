@@ -148,7 +148,12 @@ class MCPPlugin(Gimp.PlugIn):
         return False
 
     def do_query_procedures(self):
-        """Register the plugin procedures."""
+        """Register the plugin procedures.
+
+        GIMP sorts plug-in menu items alphabetically by label (registration
+        order is ignored), so the Tools > MCP labels are numbered to keep
+        them in Start, Check, Restart, Settings order.
+        """
         return ["plug-in-mcp-server", "plug-in-mcp-check", "plug-in-mcp-restart",
                 "plug-in-mcp-settings", "plug-in-mcp-autostart"]
 
@@ -169,7 +174,7 @@ class MCPPlugin(Gimp.PlugIn):
 
         if name == "plug-in-mcp-settings":
             procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self._run_settings, None)
-            procedure.set_menu_label(_("MCP Server Settings..."))
+            procedure.set_menu_label(_("4. MCP Server Settings..."))
             procedure.set_documentation(_("Configure the MCP server"),
                                         _("Choose whether the MCP server starts when GIMP launches, "
                                           "and which port it listens on. Changes apply the next "
@@ -191,7 +196,7 @@ class MCPPlugin(Gimp.PlugIn):
 
         if name == "plug-in-mcp-check":
             procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self._run_check, None)
-            procedure.set_menu_label(_("Check MCP Server"))
+            procedure.set_menu_label(_("2. Check MCP Server"))
             procedure.set_documentation(_("Check whether the MCP server is running"),
                                         _("Prints MCP server status to the GIMP console"),
                                         name)
@@ -204,7 +209,7 @@ class MCPPlugin(Gimp.PlugIn):
 
         if name == "plug-in-mcp-restart":
             procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self._run_restart, None)
-            procedure.set_menu_label(_("Restart MCP Server"))
+            procedure.set_menu_label(_("3. Restart MCP Server"))
             procedure.set_documentation(_("Restart the MCP server socket"),
                                         _("Drops and re-binds the MCP server socket"),
                                         name)
@@ -217,7 +222,7 @@ class MCPPlugin(Gimp.PlugIn):
 
         # Default: plug-in-mcp-server
         procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self.run, None)
-        procedure.set_menu_label(_("Start MCP Server"))
+        procedure.set_menu_label(_("1. Start MCP Server"))
         procedure.set_documentation(_("Starts an MCP server to control GIMP externally"),
                                     _("Starts an MCP server to control GIMP externally"),
                                     name)
