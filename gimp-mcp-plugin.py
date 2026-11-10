@@ -19,6 +19,7 @@ import json
 import socket
 import traceback
 import threading
+import time
 import base64
 import tempfile
 import os
@@ -86,10 +87,17 @@ def probe_listener(host, port, timeout=2.0):
     except OSError:
         return "none"
     try:
+        # One deadline for the whole reply, so a listener that trickles bytes
+        # cannot stretch the probe past `timeout`.
+        deadline = time.monotonic() + timeout
         sock.settimeout(timeout)
         sock.sendall(json.dumps({"type": "check_server", "params": {}}).encode("utf-8"))
         data = b""
         while len(data) < 65536:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "other"
+            sock.settimeout(remaining)
             chunk = sock.recv(4096)
             if not chunk:
                 break
@@ -527,8 +535,9 @@ class MCPPlugin(Gimp.PlugIn):
         
         # print(f"Parsed request: {request}")
         if self._is_check_server(request):
-            # Answered without the lock (it makes no GIMP calls) so a probe
-            # from another plug-in process gets a reply even mid-command.
+            # check_server is handled only here, without the lock (it makes no
+            # GIMP calls), so a probe from another plug-in process gets a reply
+            # even mid-command.
             response = {"status": "success", "results": {"running": True, "port": self.port}}
         else:
             with self.command_lock:
@@ -568,8 +577,6 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._get_gimp_info()
             elif "type" in j and j["type"] == "get_context_state":
                 return self._get_context_state()
-            elif "type" in j and j["type"] == "check_server":
-                return {"status": "success", "results": {"running": True, "port": self.port}}
             elif "type" in j and j["type"] == "restart_server":
                 return self._restart_server()
             elif "type" in j and j["type"] == "new_canvas":
