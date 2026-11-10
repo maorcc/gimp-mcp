@@ -75,8 +75,18 @@ The main interface is the `call_api` tool with parameters:
 
 - Use `Gimp.get_images()` instead of deprecated `Gimp.list_images()`
 - Access layers via `image.get_layers()` instead of `Gimp.get_active_layer()`
-- Colors are created with `Gegl.Color.new('color_name')`
-  or with color RGB values, e.g. `Gegl.Color.new("rgb(1.0, 0.647, 0.0)")`. Notice, each RGB value is in the range 0-1
+- Colors: MCP tools take color via the plugin's `self._color(spec)` helper, which
+  accepts hex (`"#rrggbb"`/`"#rrggbbaa"`), named (`"red"`, `"transparent"`),
+  CSS `"rgb(r,g,b)"`/`"rgba(...)"`, or an `[r,g,b(,a)]` list. RGB components are
+  read as 0-255 when any of them exceeds 1, else as 0-1, and are always treated as
+  **sRGB**. Alpha is scaled independently (CSS uses 0-255 for RGB but 0-1 for
+  alpha): an alpha `<= 1` is read as 0-1, otherwise as 0-255 — so both
+  `rgba(255,0,0,0.5)` and `rgba(255,0,0,128)` give 50% opacity.
+- Gotcha behind that helper: raw `Gegl.Color.new("rgb(...)")` and `set_rgba()` store
+  values as **linear** (so `rgb(255,...)` clamps to white and `rgb(1.0,...)` looks
+  washed out); only **hex** parses as sRGB. `_color` normalizes everything to an
+  sRGB hex string — the only verified-correct construction path. Prefer hex/`_color`
+  over raw `rgb()` strings.
 - Always call `Gimp.displays_flush()` after drawing operations
 
 ### Essential Initialization Pattern

@@ -2574,13 +2574,15 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
 
 @mcp.tool()
 def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
-    """Undo one or more operations on an image.
+    """Unsupported on GIMP 3.x: GIMP 3.x exposes no scriptable undo, so this
+    tool always returns an error. Use Edit > Undo (Ctrl+Z) in GIMP, or re-open
+    the source file to revert.
 
     Parameters:
-    - steps: Number of undo steps (default 1)
-    - image_index: Target image index (default 0)
+    - steps: Ignored (kept for client compatibility)
+    - image_index: Ignored (kept for client compatibility)
 
-    Returns: {steps_undone}
+    Returns: always raises with an explanatory error.
     """
     try:
         conn = get_gimp_connection()
@@ -2595,13 +2597,14 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
 
 @mcp.tool()
 def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
-    """Redo one or more previously undone operations on an image.
+    """Unsupported on GIMP 3.x: GIMP 3.x exposes no scriptable redo, so this
+    tool always returns an error. Use Edit > Redo (Ctrl+Y) in GIMP.
 
     Parameters:
-    - steps: Number of redo steps (default 1)
-    - image_index: Target image index (default 0)
+    - steps: Ignored (kept for client compatibility)
+    - image_index: Ignored (kept for client compatibility)
 
-    Returns: {steps_redone}
+    Returns: always raises with an explanatory error.
     """
     try:
         conn = get_gimp_connection()
