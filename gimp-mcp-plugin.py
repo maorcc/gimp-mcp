@@ -45,6 +45,43 @@ def exec_and_get_results(command, context):
     return output
 
 
+# Gegl stores colour in linear light, so Gegl.Color.get_rgba() returns linear
+# floats; scaling those by 255 yields linear values wearing an sRGB label, and
+# #ff5733 reads back as (255, 24, 8).
+#
+# babl would convert this for us, but Babl.format() cannot be reached safely
+# from here: if babl is not yet initialised it calls babl_fatal() -- "you must
+# call babl_init first" -- which aborts the process at the C level and cannot
+# be caught from Python. GIMP imports this file during its plug-in scan,
+# before that initialisation, so touching babl here makes the whole plug-in
+# vanish from the menu. The sRGB transfer function is exact for 8-bit output
+# anyway: it round-trips all 256 levels and matches babl on every colour
+# tested.
+
+
+def _linear_to_srgb_u8(value):
+    """One linear-light channel (0..1 float) -> 0-255 sRGB byte."""
+    if value <= 0.0:
+        return 0
+    if value <= 0.0031308:
+        encoded = value * 12.92
+    else:
+        encoded = 1.055 * (value ** (1.0 / 2.4)) - 0.055
+    return max(0, min(255, round(encoded * 255)))
+
+
+def srgb_bytes_from_color(color):
+    """Gegl.Color -> (r, g, b, a) as 0-255 sRGB values."""
+    red, green, blue, alpha = color.get_rgba()
+    return (
+        _linear_to_srgb_u8(red),
+        _linear_to_srgb_u8(green),
+        _linear_to_srgb_u8(blue),
+        # Alpha is stored linearly; it takes no transfer function.
+        max(0, min(255, round(alpha * 255))),
+    )
+
+
 class MCPPlugin(Gimp.PlugIn):
     def __init__(self, host='localhost', port=9877):
         super().__init__()
@@ -56,6 +93,9 @@ class MCPPlugin(Gimp.PlugIn):
         self.context = {}
         exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
+        # One client thread per connection; a retry after a client-side timeout
+        # would otherwise drive the libgimp wire protocol concurrently and crash
+        self.command_lock = threading.Lock()
 
     def do_set_i18n(self, procname):
         # Plugin has no translations; tell GIMP so it stops logging
@@ -226,7 +266,8 @@ class MCPPlugin(Gimp.PlugIn):
             request = str(buffer)
         
         # print(f"Parsed request: {request}")
-        response = self.execute_command(request)
+        with self.command_lock:
+            response = self.execute_command(request)
         print(f"response type: {type(response)}")
         
         if isinstance(response, dict):
@@ -247,7 +288,7 @@ class MCPPlugin(Gimp.PlugIn):
         return
 
     def execute_command(self, request):
-        """Execute commands in GIMP's main thread."""
+        """Run one command. Called from client threads; command_lock keeps commands from overlapping."""
         try:
             if request == "disable_auto_disconnect":
                 self.auto_disconnect_client = False
@@ -1470,8 +1511,7 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_background(bg_color)
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
 
-            Gimp.Display.new(image)
-            Gimp.displays_flush()
+            display_opened = self._create_display(image)
 
             print(f"New canvas created: {width}x{height} {color_mode} fill={fill}")
             return {
@@ -1483,7 +1523,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "color_mode": color_mode,
                     "fill": fill,
                     "resolution": resolution,
-                    "display_opened": True
+                    "display_opened": display_opened
                 }
             }
         except Exception as e:
@@ -1497,6 +1537,26 @@ class MCPPlugin(Gimp.PlugIn):
     # =========================================================================
     # SHARED HELPERS
     # =========================================================================
+
+    def _create_display(self, image):
+        """Open a display for image; return True if one was created.
+
+        Headless runs (gimp -i) have no display backend: Gimp.Display.new()
+        raises "constructor returned NULL" there even though the image itself
+        is fine, so a failure here must not fail the calling operation.
+        """
+        try:
+            Gimp.Display.new(image)
+        except Exception as display_err:
+            print(f"[MCP] Display creation skipped (headless?): {display_err}")
+            return False
+        # The display exists at this point; a failed refresh must not make the
+        # caller report that no display was opened.
+        try:
+            Gimp.displays_flush()
+        except Exception as flush_err:
+            print(f"[MCP] displays_flush failed after opening display: {flush_err}")
+        return True
 
     def _get_image(self, image_index):
         """Return the image at image_index from Gimp.get_images(), raise if none open."""
@@ -1658,8 +1718,7 @@ class MCPPlugin(Gimp.PlugIn):
             image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gio_file)
             if image is None:
                 return {"status": "error", "error": f"Could not open file: {file_path}"}
-            display = Gimp.Display.new(image)
-            Gimp.displays_flush()
+            display_opened = self._create_display(image)
             base_type = image.get_base_type()
             mode_map = {
                 Gimp.ImageBaseType.RGB:     "RGB",
@@ -1674,7 +1733,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "height":        image.get_height(),
                     "color_mode":    mode_map.get(base_type, str(base_type)),
                     "num_layers":    len(image.get_layers()),
-                    "display_opened": display is not None,
+                    "display_opened": display_opened,
                 }
             }
         except Exception as e:
@@ -3946,8 +4005,7 @@ class MCPPlugin(Gimp.PlugIn):
             pixel    = drawable.get_pixel(x, y)
             # GIMP 3.2: get_pixel returns a Gegl.Color object
             if hasattr(pixel, 'get_rgba'):
-                rf, gf, bf, af = pixel.get_rgba()
-                r, g, b, a = int(rf*255), int(gf*255), int(bf*255), int(af*255)
+                r, g, b, a = srgb_bytes_from_color(pixel)
             else:
                 # Fallback: old tuple format (num_channels, bytes_array)
                 channels = list(pixel[1]) if hasattr(pixel[1], '__iter__') else []

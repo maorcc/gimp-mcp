@@ -7,12 +7,11 @@ name = "gimp-mcp"
 version = "0.1.0"
 description = "GIMP MCP integration for external control of GIMP 3.2"
 readme = "README.md"
-license = "MIT"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp",
-    "fastmcp",
+    "mcp>=1.28.1,<2",
 ]
 
 [project.scripts]
