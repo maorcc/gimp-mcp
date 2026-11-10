@@ -75,6 +75,52 @@ def save_settings(settings):
     os.replace(tmp_path, path)
 
 
+def _exchange(sock, payload, timeout):
+    """Send a JSON request on a connected socket and return the parsed reply.
+
+    Returns None if the listener closes, errors, sends something that is not
+    JSON, or does not finish replying within `timeout` seconds.
+    """
+    try:
+        # One deadline for the whole reply, so a listener that trickles bytes
+        # cannot stretch the exchange past `timeout`.
+        deadline = time.monotonic() + timeout
+        sock.settimeout(timeout)
+        sock.sendall(json.dumps(payload).encode("utf-8"))
+        data = b""
+        while len(data) < 65536:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            sock.settimeout(remaining)
+            chunk = sock.recv(4096)
+            if not chunk:
+                return None
+            data += chunk
+            try:
+                return json.loads(data.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+    except OSError:
+        pass
+    return None
+
+
+def send_request(host, port, payload, timeout):
+    """Connect to host:port, send one JSON request and return the parsed reply.
+
+    Returns None if the connection fails or no valid reply arrives in time.
+    """
+    try:
+        sock = socket.create_connection((host, port), timeout=0.5)
+    except OSError:
+        return None
+    try:
+        return _exchange(sock, payload, timeout)
+    finally:
+        sock.close()
+
+
 def probe_listener(host, port, timeout=2.0):
     """Identify what is listening on host:port.
 
@@ -87,33 +133,12 @@ def probe_listener(host, port, timeout=2.0):
     except OSError:
         return "none"
     try:
-        # One deadline for the whole reply, so a listener that trickles bytes
-        # cannot stretch the probe past `timeout`.
-        deadline = time.monotonic() + timeout
-        sock.settimeout(timeout)
-        sock.sendall(json.dumps({"type": "check_server", "params": {}}).encode("utf-8"))
-        data = b""
-        while len(data) < 65536:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return "other"
-            sock.settimeout(remaining)
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-            try:
-                reply = json.loads(data.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            results = reply.get("results") if isinstance(reply, dict) else None
-            if isinstance(results, dict) and results.get("running") is True:
-                return "mcp"
-            return "other"
-    except OSError:
-        pass
+        reply = _exchange(sock, {"type": "check_server", "params": {}}, timeout)
     finally:
         sock.close()
+    results = reply.get("results") if isinstance(reply, dict) else None
+    if isinstance(results, dict) and results.get("running") is True:
+        return "mcp"
     return "other"
 
 
@@ -178,6 +203,12 @@ class MCPPlugin(Gimp.PlugIn):
         # One client thread per connection; a retry after a client-side timeout
         # would otherwise drive the libgimp wire protocol concurrently and crash
         self.command_lock = threading.Lock()
+        # A restart_server request asks the accept thread to re-bind the
+        # listening socket, so the socket is only ever replaced by the thread
+        # that calls accept() on it.
+        self._restart_requested = threading.Event()
+        self._restart_done = threading.Event()
+        self._restart_result = None
 
     def do_set_i18n(self, procname):
         # Plugin has no translations; tell GIMP so it stops logging
@@ -235,7 +266,8 @@ class MCPPlugin(Gimp.PlugIn):
             procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self._run_check, None)
             procedure.set_menu_label(_("2. Check MCP Server"))
             procedure.set_documentation(_("Check whether the MCP server is running"),
-                                        _("Prints MCP server status to the GIMP console"),
+                                        _("Reports whether an MCP server is listening on the "
+                                          "port saved in MCP Server Settings"),
                                         name)
             procedure.set_attribution("Viesar Lab", "Viesar Lab", "2026")
             procedure.add_enum_argument("run-mode", _("Run mode"), _("The run mode"),
@@ -248,7 +280,8 @@ class MCPPlugin(Gimp.PlugIn):
             procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self._run_restart, None)
             procedure.set_menu_label(_("3. Restart MCP Server"))
             procedure.set_documentation(_("Restart the MCP server socket"),
-                                        _("Drops and re-binds the MCP server socket"),
+                                        _("Asks the running MCP server to drop and re-bind its "
+                                          "listening socket"),
                                         name)
             procedure.set_attribution("Viesar Lab", "Viesar Lab", "2026")
             procedure.add_enum_argument("run-mode", _("Run mode"), _("The run mode"),
@@ -270,17 +303,45 @@ class MCPPlugin(Gimp.PlugIn):
         procedure.add_menu_path('<Image>/Tools/MCP')
         return procedure
 
+    @staticmethod
+    def _report(config, message):
+        """Print a menu-action result, and show it in GIMP when run interactively."""
+        print(f"[MCP] {message}")
+        if config.get_property("run-mode") == Gimp.RunMode.INTERACTIVE:
+            Gimp.message(message)
+
+    # Each menu click runs in a fresh plug-in process, separate from the one
+    # running the server (autostart or Start), so the menu actions below talk
+    # to the server over its socket instead of reading self.running.
+
     def _run_check(self, procedure, config, run_data):
-        """Menu action: print server status."""
-        status = "RUNNING" if self.running else "STOPPED"
-        print(f"[MCP] Server status: {status} on port {self.port}")
+        """Menu action: report whether the MCP server is listening."""
+        port = load_settings()["port"]
+        listener = probe_listener(self.host, port)
+        status = {"mcp": "RUNNING", "none": "STOPPED"}.get(listener, "PORT IN USE by another program")
+        self._report(config, f"Server status: {status} on {self.host}:{port}")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
     def _run_restart(self, procedure, config, run_data):
-        """Menu action: restart the server socket."""
-        result = self._restart_server()
-        print(f"[MCP] Restart result: {result}")
-        return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+        """Menu action: ask the running MCP server to re-bind its socket."""
+        port = load_settings()["port"]
+        listener = probe_listener(self.host, port)
+        if listener == "mcp":
+            reply = send_request(self.host, port, {"type": "restart_server", "params": {}},
+                                 DEFAULT_TIMEOUT_SECONDS)
+            if isinstance(reply, dict) and reply.get("status") == "success":
+                self._report(config, f"MCP server restarted on {self.host}:{port}")
+                return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+            error = reply.get("error") if isinstance(reply, dict) else None
+            message = f"Could not restart the MCP server on {self.host}:{port}: {error or 'no reply'}"
+        elif listener == "none":
+            message = (f"No MCP server is running on {self.host}:{port}. "
+                       f"Start it with Tools > MCP > Start MCP Server.")
+        else:
+            message = (f"Port {port} on {self.host} is in use by another program, not the MCP "
+                       f"server. Choose a different port in Tools > MCP > MCP Server Settings.")
+        self._report(config, message)
+        return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error(message))
 
     def shutdown_server(self, signum=None, frame=None):
         """Gracefully shutdown the server."""
@@ -298,6 +359,11 @@ class MCPPlugin(Gimp.PlugIn):
         """Accept loop — runs in a background thread on the socket bound by _serve_forever."""
         try:
             while self.running:
+                if self._restart_requested.is_set():
+                    self._rebind()
+                    if not self.running:
+                        break
+                    continue
                 try:
                     client, address = self.socket.accept()
                     print(f"Connected to client: {address}")
@@ -339,20 +405,11 @@ class MCPPlugin(Gimp.PlugIn):
 
         # Bind in the calling thread so a failure is reported instead of
         # leaving the process idling in the main loop with no server.
+        print("Creating socket...")
         try:
-            print("Creating socket...")
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.settimeout(1.0)
-            sock.bind((self.host, self.port))
-            sock.listen(1)
+            self.socket = self._bind_listener()
         except OSError as e:
-            try:
-                sock.close()
-            except Exception:
-                pass
             return (False, f"Could not start MCP server on {self.host}:{self.port}: {e}")
-        self.socket = sock
         self.running = True
         print(f"GimpMCP server started on {self.host}:{self.port}")
 
@@ -1711,37 +1768,67 @@ class MCPPlugin(Gimp.PlugIn):
                 "traceback": traceback.format_exc()
             }
 
-    def _restart_server(self):
-        """Gracefully restart the MCP socket server in-place."""
+    def _bind_listener(self):
+        """Create, bind and listen on the server socket. Raises OSError on failure."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            print("Restarting MCP server socket...")
-            # Close existing socket to force reconnect on next client call
-            if self.socket:
-                try:
-                    self.socket.close()
-                except Exception:
-                    pass
-                self.socket = None
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.settimeout(1.0)
+            sock.bind((self.host, self.port))
+            sock.listen(1)
+        except OSError:
+            sock.close()
+            raise
+        return sock
 
-            # Re-bind a fresh socket
-            import time
-            time.sleep(0.3)
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.settimeout(1.0)
-            self.socket.bind((self.host, self.port))
-            self.socket.listen(1)
+    def _rebind(self):
+        """Replace the listening socket. Runs only on the accept thread.
+
+        Clients already connected keep their own sockets. If the port can't
+        be bound again the server stops, and the main loop is quit so the
+        plug-in process exits instead of idling without a server.
+        """
+        print("Restarting MCP server socket...")
+        if self.socket:
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+            self.socket = None
+        try:
+            self.socket = self._bind_listener()
             print(f"MCP server restarted on {self.host}:{self.port}")
-            return {
+            self._restart_result = {
                 "status": "success",
                 "results": {"restarted": True, "host": self.host, "port": self.port}
             }
-        except Exception as e:
-            return {
+        except OSError as e:
+            print(f"MCP server restart failed, server stopped: {e}")
+            self.running = False
+            self._restart_result = {
                 "status": "error",
-                "error": f"Restart failed: {str(e)}",
-                "traceback": traceback.format_exc()
+                "error": f"Restart failed, the MCP server has stopped: {e}"
             }
+            if getattr(self, "_glib_loop", None):
+                self._glib_loop.quit()
+        self._restart_requested.clear()
+        self._restart_done.set()
+
+    def _restart_server(self):
+        """Re-bind the listening socket of the server running in this process.
+
+        The accept thread does the re-bind (see _rebind) so the socket is never
+        replaced under a running accept(). Called from a client thread.
+        """
+        if not self.running or self.socket is None:
+            return {"status": "error", "error": "The MCP server is not running in this process"}
+        self._restart_done.clear()
+        self._restart_requested.set()
+        # The accept loop checks for a restart at least once a second
+        # (the listening socket's accept timeout).
+        if not self._restart_done.wait(timeout=5.0):
+            return {"status": "error", "error": "Restart timed out waiting for the server thread"}
+        return self._restart_result
 
     def _new_canvas(self, params):
         """Create a new blank canvas and open it in a GIMP display window."""
