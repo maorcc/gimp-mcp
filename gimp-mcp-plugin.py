@@ -1940,16 +1940,22 @@ class MCPPlugin(Gimp.PlugIn):
             contrast    = float(params.get("contrast", 0))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # gimp-drawable-brightness-contrast works in linear light on GIMP 3,
+            # so even +8/+12 crushes everything below ~56/255 to black. Apply the
+            # same formula as a perceptual-space LUT through curves instead.
+            import math
+            b = max(-1.0, min(1.0, brightness / 127.0)) / 2.0
+            slant = math.tan((max(-1.0, min(1.0, contrast / 127.0)) + 1.0) * math.pi / 4.0)
+            lut = []
+            for i in range(256):
+                v = i / 255.0
+                v = v * (1.0 + b) if b < 0.0 else v + (1.0 - v) * b
+                v = (v - 0.5) * slant + 0.5
+                lut.append(min(1.0, max(0.0, v)))
             image.undo_group_start()
             try:
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-brightness-contrast")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable", drawable)
-                    cfg.set_property("brightness", brightness / 127.0)
-                    cfg.set_property("contrast",   contrast   / 127.0)
-                    proc.run(cfg)
+                if not drawable.curves_explicit(Gimp.HistogramChannel.VALUE, lut):
+                    raise Exception("gimp-drawable-curves-explicit failed")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
