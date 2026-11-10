@@ -109,8 +109,10 @@ BASES=("$HOME/Library/Application Support/GIMP")                           # mac
 # BASES=("$HOME/.config/GIMP" "$HOME/snap/gimp/current/.config/GIMP")     # Linux
 
 # Auto-select the newest GIMP 3.x config directory (3.0, 3.2, 3.4, ...), comparing
-# versions by folder name so a newer version wins regardless of which base it is in:
-GIMP_DIR="$(for b in "${BASES[@]}"; do ls -d "$b"/3.* 2>/dev/null; done \
+# versions by folder name so a newer version wins regardless of which base it is in.
+# find with a quoted pattern works the same in bash and zsh, even if a base is missing.
+GIMP_DIR="$(for b in "${BASES[@]}"; do
+    find -L "$b" -mindepth 1 -maxdepth 1 -type d -name '3.*' 2>/dev/null; done \
   | awk -F/ '{print $NF "\t" $0}' | sort -V | tail -1 | cut -f2)"
 if [ -z "$GIMP_DIR" ]; then
   echo "No GIMP 3.x config dir found — launch GIMP once, then re-run." >&2

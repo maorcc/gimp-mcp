@@ -31,7 +31,10 @@ path is shown in **Edit > Preferences > Folders > Plug-ins**. Base dirs per plat
 ```bash
 # Linux: pick the newest GIMP 3.x config dir from both the standard and snap locations.
 # Versions are compared by folder name, so 3.2 under ~/.config beats a stale snap 3.0.
-GIMP_DIR="$(ls -d "$HOME/.config/GIMP"/3.* "$HOME/snap/gimp/current/.config/GIMP"/3.* 2>/dev/null \
+# Uses find with a quoted pattern (not a 3.* glob) so a missing location doesn't make
+# zsh abort with "no matches found".
+GIMP_DIR="$(for b in "$HOME/.config/GIMP" "$HOME/snap/gimp/current/.config/GIMP"; do
+    find -L "$b" -mindepth 1 -maxdepth 1 -type d -name '3.*' 2>/dev/null; done \
   | awk -F/ '{print $NF "\t" $0}' | sort -V | tail -1 | cut -f2)"
 if [ -z "$GIMP_DIR" ]; then
   echo "No GIMP 3.x config dir found - start GIMP once, then check Edit > Preferences > Folders > Plug-ins"
