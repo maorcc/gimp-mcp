@@ -3233,7 +3233,7 @@ class MCPPlugin(Gimp.PlugIn):
                         cfg = proc.create_config()
                         cfg.set_property("layer",     layer)
                         cfg.set_property("font-size", float(new_size))
-                        cfg.set_property("unit",      Gimp.Unit.PIXEL)
+                        cfg.set_property("unit",      Gimp.Unit.pixel())
                         proc.run(cfg)
                 if new_color is not None:
                     proc = pdb.lookup_procedure("gimp-text-layer-set-color")
