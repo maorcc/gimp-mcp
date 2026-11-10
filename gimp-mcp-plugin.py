@@ -74,13 +74,39 @@ def save_settings(settings):
     os.replace(tmp_path, path)
 
 
-def port_in_use(host, port):
-    """True if something is already accepting connections on host:port."""
+def probe_listener(host, port, timeout=2.0):
+    """Identify what is listening on host:port.
+
+    Returns "none" if nothing accepts connections, "mcp" if the listener
+    answers check_server like this plug-in, and "other" for anything else
+    (another program, or a listener that does not reply in time).
+    """
     try:
-        with socket.create_connection((host, port), timeout=0.5):
-            return True
+        sock = socket.create_connection((host, port), timeout=0.5)
     except OSError:
-        return False
+        return "none"
+    try:
+        sock.settimeout(timeout)
+        sock.sendall(json.dumps({"type": "check_server", "params": {}}).encode("utf-8"))
+        data = b""
+        while len(data) < 65536:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+            try:
+                reply = json.loads(data.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            results = reply.get("results") if isinstance(reply, dict) else None
+            if isinstance(results, dict) and results.get("running") is True:
+                return "mcp"
+            return "other"
+    except OSError:
+        pass
+    finally:
+        sock.close()
+    return "other"
 
 
 def exec_and_get_results(command, context):
@@ -295,8 +321,13 @@ class MCPPlugin(Gimp.PlugIn):
         """
         # Each menu click runs in a fresh plug-in process, so self.running
         # cannot tell whether the autostarted server (another process) is up.
-        if port_in_use(self.host, self.port):
+        listener = probe_listener(self.host, self.port)
+        if listener == "mcp":
             return (True, f"MCP server is already running on {self.host}:{self.port}")
+        if listener == "other":
+            return (False, f"Could not start MCP server: port {self.port} on {self.host} is in use "
+                           f"by another program. Choose a different port in "
+                           f"Tools > MCP > MCP Server Settings.")
 
         # Bind in the calling thread so a failure is reported instead of
         # leaving the process idling in the main loop with no server.
@@ -448,6 +479,14 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.message(message)
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
+    @staticmethod
+    def _is_check_server(request):
+        try:
+            j = json.loads(request)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(j, dict) and j.get("type") == "check_server"
+
     def _handle_client(self, client):
         """Handle connected client"""
         # print("Client handler started")
@@ -487,8 +526,13 @@ class MCPPlugin(Gimp.PlugIn):
             request = str(buffer)
         
         # print(f"Parsed request: {request}")
-        with self.command_lock:
-            response = self.execute_command(request)
+        if self._is_check_server(request):
+            # Answered without the lock (it makes no GIMP calls) so a probe
+            # from another plug-in process gets a reply even mid-command.
+            response = {"status": "success", "results": {"running": True, "port": self.port}}
+        else:
+            with self.command_lock:
+                response = self.execute_command(request)
         print(f"response type: {type(response)}")
         
         if isinstance(response, dict):
