@@ -23,17 +23,24 @@ GIMP's per-user config dir is named after its **major.minor** version (`3.0`, `3
 and a new one is created on each minor upgrade, so the `plug-ins` path moves when GIMP is
 upgraded (e.g. 3.0 → 3.2). Install into the directory matching the installed GIMP; the active
 path is shown in **Edit > Preferences > Folders > Plug-ins**. Base dirs per platform:
-- Linux: `~/.config/GIMP/<VER>` (Snap: `~/snap/gimp/current/.config/GIMP/<VER>`)
+- Linux: `~/.config/GIMP/<VER>` or `~/snap/gimp/current/.config/GIMP/<VER>`. Snap builds
+  can use either one (e.g. snap GIMP 3.2 uses `~/.config/GIMP/3.2`), so check both.
 - macOS: `~/Library/Application Support/GIMP/<VER>`
 - Windows: `%APPDATA%\GIMP\<VER>`
 
 ```bash
-# Auto-select the newest GIMP 3.x config dir (snap example shown; adjust BASE per platform)
-BASE="$HOME/snap/gimp/current/.config/GIMP"
-GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
-mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
-chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
+# Linux: pick the newest GIMP 3.x config dir from both the standard and snap locations.
+# Versions are compared by folder name, so 3.2 under ~/.config beats a stale snap 3.0.
+GIMP_DIR="$(ls -d "$HOME/.config/GIMP"/3.* "$HOME/snap/gimp/current/.config/GIMP"/3.* 2>/dev/null \
+  | awk -F/ '{print $NF "\t" $0}' | sort -V | tail -1 | cut -f2)"
+if [ -z "$GIMP_DIR" ]; then
+  echo "No GIMP 3.x config dir found - start GIMP once, then check Edit > Preferences > Folders > Plug-ins"
+else
+  mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
+  cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
+  chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
+  echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
+fi
 ```
 Then start it from **Tools > MCP > Start MCP Server** in GIMP.
 
