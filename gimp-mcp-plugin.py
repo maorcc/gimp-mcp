@@ -1841,7 +1841,7 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-levels-stretch")
+                proc = pdb.lookup_procedure("gimp-drawable-levels-stretch")
                 if proc:
                     cfg = proc.create_config()
                     cfg.set_property("drawable", drawable)
