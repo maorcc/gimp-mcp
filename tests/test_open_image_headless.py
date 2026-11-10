@@ -113,13 +113,12 @@ def load_plugin():
     return mod
 
 
-def run_case(mod, plugin, display_raises, expect_display_opened):
-    """Call _open_image under a fresh stub and check metadata + display flag.
+def run_case(plugin, expect_display_opened):
+    """Call _open_image and check the returned metadata and display flag.
 
-    Fresh stubs per case? Not possible — the plugin module is imported once
-    against one stub. Instead the stub's Display.new consults the flag
-    captured at install time, so each case needs its own module import with
-    its own stub. Returns a list of failure descriptions (empty = pass).
+    Whether Display.new raises is fixed by install_gi_stub() before the
+    plugin module is loaded, so each case loads its own module copy.
+    Returns a list of failure descriptions (empty = pass).
     """
     res = plugin._open_image({"file_path": "/tmp/fake-test-image.png"})
     failures = []
@@ -145,14 +144,14 @@ def main():
     # Case 1: headless — Display.new raises, image must survive with
     # display_opened False.
     install_gi_stub(display_raises=True)
-    case1 = mod = load_plugin()
-    f1 = run_case(mod, mod.MCPPlugin(), True, False)
+    case1 = load_plugin()
+    f1 = run_case(case1.MCPPlugin(), False)
 
     # Case 2: graphical success path — Display.new succeeds; a regression
     # that always reports False would be caught here.
     install_gi_stub(display_raises=False)
     case2 = load_plugin()
-    f2 = run_case(case2, case2.MCPPlugin(), False, True)
+    f2 = run_case(case2.MCPPlugin(), True)
 
     failures = [f"headless case: {f}" for f in f1] + \
                [f"graphical case: {f}" for f in f2]
