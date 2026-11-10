@@ -365,29 +365,68 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.message(message)
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
+    def _show_settings_dialog(self, settings):
+        """Show the settings dialog; return the new settings, or None if cancelled.
+
+        A plain GimpUi.Dialog rather than GimpUi.ProcedureDialog: the latter
+        also shows the run-mode argument and GIMP's own Load/Save Settings
+        preset buttons, which are separate from gimp-mcp.json and confusing.
+        """
+        gi.require_version('GimpUi', '3.0')
+        gi.require_version('Gtk', '3.0')
+        from gi.repository import GimpUi, Gtk
+        GimpUi.init("plug-in-mcp-settings")
+
+        use_header_bar = Gtk.Settings.get_default().get_property("gtk-dialogs-use-header")
+        dialog = GimpUi.Dialog(use_header_bar=use_header_bar, title=_("MCP Server Settings"),
+                               role="plug-in-mcp-settings")
+        dialog.add_button(_("_Cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(_("_OK"), Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_border_width(12)
+        dialog.get_content_area().pack_start(box, True, True, 0)
+
+        autostart = Gtk.CheckButton.new_with_mnemonic(_("_Start MCP server when GIMP launches"))
+        autostart.set_active(settings["autostart"])
+        box.pack_start(autostart, False, False, 0)
+
+        port_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        port_label = Gtk.Label.new_with_mnemonic(_("_Port:"))
+        port = Gtk.SpinButton.new_with_range(1, 65535, 1)
+        port.set_value(settings["port"])
+        port.set_activates_default(True)
+        port_label.set_mnemonic_widget(port)
+        port_row.pack_start(port_label, False, False, 0)
+        port_row.pack_start(port, False, False, 0)
+        box.pack_start(port_row, False, False, 0)
+
+        note = Gtk.Label(label=_("Changes apply the next time the MCP server starts.\n"
+                                 "If you change the port, set GIMP_MCP_PORT to the same\n"
+                                 "value in your MCP client config."))
+        note.set_xalign(0.0)
+        note.get_style_context().add_class("dim-label")
+        box.pack_start(note, False, False, 0)
+
+        dialog.show_all()
+        response = dialog.run()
+        port.update()  # commit a value typed without leaving the field
+        result = {"autostart": autostart.get_active(), "port": port.get_value_as_int()}
+        dialog.destroy()
+        return result if response == Gtk.ResponseType.OK else None
+
     def _run_settings(self, procedure, config, run_data):
         """Menu action: edit autostart and port, saved to gimp-mcp.json."""
-        settings = load_settings()
         if config.get_property("run-mode") == Gimp.RunMode.INTERACTIVE:
-            # The settings file is the source of truth (the autostart step
-            # reads it), so show its values rather than GIMP's last-used ones.
-            config.set_property("autostart", settings["autostart"])
-            config.set_property("port", settings["port"])
-
-            gi.require_version('GimpUi', '3.0')
-            from gi.repository import GimpUi
-            GimpUi.init("plug-in-mcp-settings")
-            dialog = GimpUi.ProcedureDialog.new(procedure, config, _("MCP Server Settings"))
-            dialog.fill(None)
-            accepted = dialog.run()
-            dialog.destroy()
-            if not accepted:
+            new_settings = self._show_settings_dialog(load_settings())
+            if new_settings is None:
                 return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
-
-        new_settings = {
-            "autostart": bool(config.get_property("autostart")),
-            "port": int(config.get_property("port")),
-        }
+        else:
+            new_settings = {
+                "autostart": bool(config.get_property("autostart")),
+                "port": int(config.get_property("port")),
+            }
         try:
             save_settings(new_settings)
         except OSError as e:
