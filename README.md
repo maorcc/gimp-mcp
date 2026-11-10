@@ -103,21 +103,25 @@ Copy `gimp-mcp-plugin.py` to GIMP's plug-ins directory and restart GIMP.
 
 **macOS / Linux:**
 ```bash
-# Pick the base directory for your platform:
-BASE="$HOME/Library/Application Support/GIMP"     # macOS
-# BASE="$HOME/.config/GIMP"                        # Linux (standard)
-# BASE="$HOME/snap/gimp/current/.config/GIMP"      # Linux (Snap)
+# Base directories to search. The Linux line covers both the standard and the Snap
+# location, since Snap builds of GIMP can use either one.
+BASES=("$HOME/Library/Application Support/GIMP")                           # macOS
+# BASES=("$HOME/.config/GIMP" "$HOME/snap/gimp/current/.config/GIMP")     # Linux
 
-# Auto-select the newest GIMP 3.x config directory (3.0, 3.2, 3.4, ...):
-GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
+# Auto-select the newest GIMP 3.x config directory (3.0, 3.2, 3.4, ...), comparing
+# versions by folder name so a newer version wins regardless of which base it is in.
+# find with a quoted pattern works the same in bash and zsh, even if a base is missing.
+GIMP_DIR="$(for b in "${BASES[@]}"; do
+    find -L "$b" -mindepth 1 -maxdepth 1 -type d -name '3.*' 2>/dev/null; done \
+  | awk -F/ '{print $NF "\t" $0}' | sort -V | tail -1 | cut -f2)"
 if [ -z "$GIMP_DIR" ]; then
-  echo "No GIMP 3.x config dir found under $BASE — launch GIMP once, then re-run." >&2
-  exit 1
+  echo "No GIMP 3.x config dir found — launch GIMP once, then re-run." >&2
+else
+  mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
+  cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
+  chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
+  echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 fi
-mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
-chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
-echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 ```
 
 **Windows:**
