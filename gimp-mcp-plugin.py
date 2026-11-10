@@ -55,6 +55,9 @@ def load_settings():
     except Exception as e:
         print(f"[MCP] Could not read {_settings_path()}: {e}; using defaults")
         return settings
+    if not isinstance(stored, dict):
+        print(f"[MCP] {_settings_path()} is not a JSON object; using defaults")
+        return settings
     if isinstance(stored.get("autostart"), bool):
         settings["autostart"] = stored["autostart"]
     port = stored.get("port")
