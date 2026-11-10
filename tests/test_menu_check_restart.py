@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Regression test for Tools > MCP > Check / Restart (issue #92).
+
+GIMP runs each menu click in a fresh plug-in process, so the Check and
+Restart handlers must find the server over its socket rather than through
+self.running. This test runs a real MCP server (accept thread + client
+threads) on a free localhost port and calls the menu handlers on a separate
+MCPPlugin instance that has never started a server, like a menu-click
+process would.
+
+Stubs gi.repository so the plugin imports without a running GIMP.
+Exits 0 on pass, 1 on fail.
+"""
+import importlib.util
+import os
+import socket
+import sys
+import threading
+import types
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PLUGIN = os.path.join(HERE, os.pardir, "gimp-mcp-plugin.py")
+
+SUCCESS, EXECUTION_ERROR = "SUCCESS", "EXECUTION_ERROR"
+
+
+def install_gi_stub():
+    gi = types.ModuleType("gi")
+    gi.require_version = lambda *a, **k: None
+    repository = types.ModuleType("gi.repository")
+
+    class Gimp:
+        class PlugIn:
+            __gtype__ = "stub-gtype"
+
+        class RunMode:
+            INTERACTIVE, NONINTERACTIVE = 0, 1
+
+        class PDBStatusType:
+            pass
+
+        @staticmethod
+        def main(gtype, argv):
+            pass
+
+        @staticmethod
+        def message(text):
+            pass
+
+    Gimp.PDBStatusType.SUCCESS = SUCCESS
+    Gimp.PDBStatusType.EXECUTION_ERROR = EXECUTION_ERROR
+
+    class GLib:
+        class Error(Exception):
+            pass
+
+        @staticmethod
+        def dgettext(domain, msg):
+            return msg
+
+    class GObject:
+        class ParamFlags:
+            READWRITE = 0
+
+    repository.Gimp, repository.GLib, repository.GObject = Gimp, GLib, GObject
+    gi.repository = repository
+    sys.modules["gi"] = gi
+    sys.modules["gi.repository"] = repository
+
+
+def load_plugin():
+    spec = importlib.util.spec_from_file_location("gimp_mcp_plugin", PLUGIN)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class FakeProcedure:
+    @staticmethod
+    def new_return_values(status, error):
+        return status
+
+
+class FakeConfig:
+    @staticmethod
+    def get_property(name):
+        return 1  # Gimp.RunMode.NONINTERACTIVE
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("localhost", 0))
+        return s.getsockname()[1]
+
+
+def start_server(mod, port):
+    """Start a real MCP server in this process, as autostart would."""
+    server = mod.MCPPlugin(port=port)
+    server.socket = server._bind_listener()
+    server.running = True
+    thread = threading.Thread(target=server._start_server_thread, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def stop_server(server, thread):
+    server.running = False
+    thread.join(timeout=5)
+
+
+def menu_click(mod, handler_name):
+    """Run a menu handler on a plug-in instance that never started a server."""
+    menu = mod.MCPPlugin()
+    messages = []
+    menu._report = lambda config, message: messages.append(message)
+    status = getattr(menu, handler_name)(FakeProcedure(), FakeConfig(), None)
+    return status, " | ".join(messages)
+
+
+def main():
+    install_gi_stub()
+    mod = load_plugin()
+    port = free_port()
+    mod.load_settings = lambda: {"autostart": True, "port": port}
+    failures = []
+
+    def expect(label, cond, detail):
+        if not cond:
+            failures.append(f"{label}: {detail}")
+
+    # 1. Server running: Check reports RUNNING on the saved port.
+    server, thread = start_server(mod, port)
+    status, msg = menu_click(mod, "_run_check")
+    expect("check while running", "RUNNING" in msg and str(port) in msg, msg)
+
+    # 2. Restart from the menu, several times; the server must keep answering.
+    for i in range(3):
+        status, msg = menu_click(mod, "_run_restart")
+        expect(f"restart #{i + 1}", status == SUCCESS and "restarted" in msg, f"{status}: {msg}")
+        expect(f"probe after restart #{i + 1}",
+               mod.probe_listener("localhost", port) == "mcp", "server stopped answering")
+    expect("server still running after restarts", server.running and thread.is_alive(),
+           "accept thread exited")
+
+    # 3. Server stopped: Check reports STOPPED, Restart fails with a hint.
+    stop_server(server, thread)
+    status, msg = menu_click(mod, "_run_check")
+    expect("check while stopped", "STOPPED" in msg, msg)
+    status, msg = menu_click(mod, "_run_restart")
+    expect("restart while stopped", status == EXECUTION_ERROR and "No MCP server" in msg,
+           f"{status}: {msg}")
+
+    # 4. Another program on the port: reported as a conflict, not as running.
+    other = socket.socket()
+    other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    other.bind(("localhost", port))
+    other.listen(4)
+
+    def junk_replies():
+        while True:
+            try:
+                conn, _ = other.accept()
+            except OSError:
+                return
+            conn.sendall(b'{"hello": "not mcp"}')
+            conn.close()
+
+    threading.Thread(target=junk_replies, daemon=True).start()
+    status, msg = menu_click(mod, "_run_check")
+    expect("check with other listener", "in use by another program" in msg.lower(), msg)
+    status, msg = menu_click(mod, "_run_restart")
+    expect("restart with other listener",
+           status == EXECUTION_ERROR and "in use by another program" in msg, f"{status}: {msg}")
+    other.close()
+
+    # 5. In-process restart_server on a plug-in with no server is an error, not a crash.
+    res = mod.MCPPlugin()._restart_server()
+    expect("in-process restart without server", res.get("status") == "error", res)
+
+    if failures:
+        print("FAIL: test_menu_check_restart")
+        for f in failures:
+            print("  -", f)
+        return 1
+    print("PASS: test_menu_check_restart - Check and Restart find the server over its socket")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
