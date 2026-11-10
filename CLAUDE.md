@@ -45,7 +45,9 @@ else
   echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 fi
 ```
-Then start it from **Tools > MCP > Start MCP Server** in GIMP.
+Then start it from **Tools > MCP > Start MCP Server** in GIMP, or enable autostart (and set the
+port) in **Tools > MCP > MCP Server Settings...**. Settings are stored in `gimp-mcp.json` in the
+GIMP config dir; a non-default port must also be set as `GIMP_MCP_PORT` for the MCP server.
 
 ### MCP Server Configuration
 Add to Claude Desktop config (`~/.config/Claude/claude_desktop_config.json`):

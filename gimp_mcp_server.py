@@ -3,6 +3,7 @@
 # Adds: new_canvas, check_server, restart_server, no bitmap size restrictions
 
 from mcp.server.fastmcp import FastMCP, Context, Image
+import os
 import socket
 import json
 import logging
@@ -15,7 +16,25 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("GimpMCPServer")
 
 GIMP_HOST = 'localhost'
-GIMP_PORT = 9877
+DEFAULT_GIMP_PORT = 9877
+
+
+def _port_from_env():
+    """GIMP_MCP_PORT must match the port set in GIMP's Tools > MCP > MCP Server Settings."""
+    value = os.environ.get("GIMP_MCP_PORT", "").strip()
+    if not value:
+        return DEFAULT_GIMP_PORT
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        logger.warning(f"Ignoring invalid GIMP_MCP_PORT={value!r}; using {DEFAULT_GIMP_PORT}")
+        return DEFAULT_GIMP_PORT
+    return port
+
+
+GIMP_PORT = _port_from_env()
 
 class GimpConnection:
     def __init__(self, host=GIMP_HOST, port=GIMP_PORT):
@@ -36,7 +55,7 @@ class GimpConnection:
         except Exception as e:
             self.sock = None
             logger.error(f"Failed to connect: {e}")
-            raise ConnectionError(f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP Server plugin is running (Tools > Start MCP Server).")
+            raise ConnectionError(f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP server is running in GIMP (Tools > MCP > Start MCP Server, or enable autostart in Tools > MCP > MCP Server Settings) and that GIMP_MCP_PORT matches its port.")
 
     def disconnect(self):
         if self.sock:
