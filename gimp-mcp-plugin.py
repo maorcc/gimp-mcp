@@ -1511,8 +1511,7 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_background(bg_color)
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
 
-            Gimp.Display.new(image)
-            Gimp.displays_flush()
+            display_opened = self._create_display(image)
 
             print(f"New canvas created: {width}x{height} {color_mode} fill={fill}")
             return {
@@ -1524,7 +1523,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "color_mode": color_mode,
                     "fill": fill,
                     "resolution": resolution,
-                    "display_opened": True
+                    "display_opened": display_opened
                 }
             }
         except Exception as e:
@@ -1538,6 +1537,26 @@ class MCPPlugin(Gimp.PlugIn):
     # =========================================================================
     # SHARED HELPERS
     # =========================================================================
+
+    def _create_display(self, image):
+        """Open a display for image; return True if one was created.
+
+        Headless runs (gimp -i) have no display backend: Gimp.Display.new()
+        raises "constructor returned NULL" there even though the image itself
+        is fine, so a failure here must not fail the calling operation.
+        """
+        try:
+            Gimp.Display.new(image)
+        except Exception as display_err:
+            print(f"[MCP] Display creation skipped (headless?): {display_err}")
+            return False
+        # The display exists at this point; a failed refresh must not make the
+        # caller report that no display was opened.
+        try:
+            Gimp.displays_flush()
+        except Exception as flush_err:
+            print(f"[MCP] displays_flush failed after opening display: {flush_err}")
+        return True
 
     def _get_image(self, image_index):
         """Return the image at image_index from Gimp.get_images(), raise if none open."""
@@ -1699,8 +1718,7 @@ class MCPPlugin(Gimp.PlugIn):
             image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gio_file)
             if image is None:
                 return {"status": "error", "error": f"Could not open file: {file_path}"}
-            display = Gimp.Display.new(image)
-            Gimp.displays_flush()
+            display_opened = self._create_display(image)
             base_type = image.get_base_type()
             mode_map = {
                 Gimp.ImageBaseType.RGB:     "RGB",
@@ -1715,7 +1733,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "height":        image.get_height(),
                     "color_mode":    mode_map.get(base_type, str(base_type)),
                     "num_layers":    len(image.get_layers()),
-                    "display_opened": display is not None,
+                    "display_opened": display_opened,
                 }
             }
         except Exception as e:
