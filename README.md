@@ -138,6 +138,25 @@ Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on 
 2. Go to **Tools > MCP > Start MCP Server**
 3. Server starts on `localhost:9877`
 
+#### Start automatically when GIMP launches
+
+To skip step 2 on every launch, open **Tools > MCP > MCP Server Settings...**, tick
+**Start MCP server when GIMP launches**, and restart GIMP. Autostart is off by default.
+
+The same dialog sets the **port** (default `9877`). If you change it, set `GIMP_MCP_PORT`
+in your MCP client config so the MCP server connects to the same port:
+
+```json
+"gimp": {
+  "command": "uv",
+  "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"],
+  "env": { "GIMP_MCP_PORT": "9988" }
+}
+```
+
+Settings are saved to `gimp-mcp.json` in GIMP's per-user config folder (e.g.
+`~/.config/GIMP/3.2/gimp-mcp.json`). Port changes apply the next time the server starts.
+
 ### 4. Configure Your MCP Client
 
 #### Claude Desktop
@@ -437,8 +456,9 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 
 ### "Could not connect to GIMP"
 - GIMP must be running with an image open
-- Start the MCP server: **Tools > MCP > Start MCP Server**
-- Check port 9877 is not blocked by firewall
+- Start the MCP server: **Tools > MCP > Start MCP Server**, or enable autostart in **Tools > MCP > MCP Server Settings...**
+- If you changed the port in GIMP, set `GIMP_MCP_PORT` to the same value in your MCP client config
+- Check port 9877 (or your custom port) is not blocked by firewall
 
 ### Plugin Not Visible in GIMP
 - Look under **Tools > MCP** (the plugin adds an `MCP` submenu, not a top-level `Tools` entry)
