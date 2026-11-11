@@ -167,8 +167,12 @@ print("=== Cat 7b: Paint tools ignore a leftover context ===")
 # by an earlier call_api used to blend into every fill and stroke. Leave
 # opacity at 50% and paint mode at DIFFERENCE (black on white would come out
 # white), then check each tool still paints solid black.
-cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
+_r = cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
+if _r.get('status') != 'success':  # otherwise the checks below would paint over the previous image
+    print(f"Cat 7b canvas setup failed: {_r.get('error', '')}", file=sys.stderr)
+    sys.exit(1)
 _BLACK = [0, 0, 0]
+_WHITE = [255, 255, 255]
 
 
 def _read_context():
@@ -204,6 +208,9 @@ def _paint_check(name, tool, params, x, y, layer_name=None, select=None):
     _context(100.0, 'NORMAL')
     cmd('select_none', {'image_index': 0})
     cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})  # so a black pixel can only come from the tool
+    q = {'image_index': 0, 'x': x, 'y': y}
+    _before = cmd('get_pixel_color', q).get('results', {}).get('color_rgb')
+    chk(name + '_starts_white', _before == _WHITE, _before)  # a failed reset could leave the last check's black
     if select:
         t(name + '_select', cmd('select_rectangle', dict(select, image_index=0)))
     _context(50.0, 'DIFFERENCE')
@@ -211,7 +218,6 @@ def _paint_check(name, tool, params, x, y, layer_name=None, select=None):
     _after = _read_context()
     chk(name + '_restores_context', _after == (50.0, 'difference'), _after)
     _context(100.0, 'NORMAL')
-    q = {'image_index': 0, 'x': x, 'y': y}
     if layer_name:
         q['layer_name'] = layer_name
     p = cmd('get_pixel_color', q).get('results', {})
