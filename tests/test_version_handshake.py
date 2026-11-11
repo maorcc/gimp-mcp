@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Tests for the plugin/server version handshake (issue #94).
+
+- PLUGIN_VERSION, SERVER_VERSION and pyproject.toml's version must match.
+- version_status() reports a match, and warns about an old plugin (including
+  one that predates the handshake) or an old server.
+
+Run with the project environment (needs the mcp package): uv run tests/test_version_handshake.py
+Exits 0 on pass, 1 on fail.
+"""
+import os
+import re
+import sys
+import tomllib
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.join(HERE, os.pardir)
+sys.path.insert(0, ROOT)
+
+import gimp_mcp_server as server  # noqa: E402
+
+failures = []
+
+
+def check(name, condition, detail=""):
+    print(f"{'PASS' if condition else 'FAIL'}: {name}{f' ({detail})' if detail and not condition else ''}")
+    if not condition:
+        failures.append(name)
+
+
+# Versions are kept in sync. The plugin is read as text because it imports gi.
+with open(os.path.join(ROOT, "pyproject.toml"), "rb") as f:
+    pyproject_version = tomllib.load(f)["project"]["version"]
+with open(os.path.join(ROOT, "gimp-mcp-plugin.py"), encoding="utf-8") as f:
+    match = re.search(r'^PLUGIN_VERSION = "([^"]+)"', f.read(), re.MULTILINE)
+plugin_version = match.group(1) if match else None
+
+check("plugin defines PLUGIN_VERSION", plugin_version is not None)
+check("SERVER_VERSION matches pyproject.toml", server.SERVER_VERSION == pyproject_version,
+      f"{server.SERVER_VERSION} != {pyproject_version}")
+check("PLUGIN_VERSION matches SERVER_VERSION", plugin_version == server.SERVER_VERSION,
+      f"{plugin_version} != {server.SERVER_VERSION}")
+
+# version_status() outcomes, with a fixed server version.
+server.SERVER_VERSION = "0.4.0"
+
+s = server.version_status("0.4.0")
+check("matching version is ok", s["version_ok"] and "version_warning" not in s, str(s))
+
+s = server.version_status(None)
+check("plugin without a version is flagged",
+      not s["version_ok"] and "doesn't report a version" in s["version_warning"]
+      and "restart GIMP" in s["version_warning"], str(s))
+
+s = server.version_status("0.3.9")
+check("older plugin asks to update the plugin",
+      not s["version_ok"] and "Update the plugin" in s["version_warning"], str(s))
+
+s = server.version_status("0.10.0")
+check("newer plugin asks to update the server (numeric, not string, comparison)",
+      not s["version_ok"] and "Update the server" in s["version_warning"], str(s))
+
+s = server.version_status("garbage")
+check("unparseable version still warns", not s["version_ok"] and "version_warning" in s, str(s))
+
+print(f"\n{len(failures)} failure(s)")
+sys.exit(1 if failures else 0)

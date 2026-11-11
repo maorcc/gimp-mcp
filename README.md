@@ -352,7 +352,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 ### 🔌 Connection & Raw API
 | Tool | Description |
 |---|---|
-| `check_server` | Check the GIMP plugin socket is reachable |
+| `check_server` | Check the GIMP plugin socket is reachable and that the plugin version matches the server |
 | `restart_server` | Drop and re-establish the connection to the plugin |
 | `call_api` | Run arbitrary Python-Fu code inside GIMP (escape hatch for anything not covered above) |
 
