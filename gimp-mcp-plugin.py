@@ -2035,6 +2035,17 @@ class MCPPlugin(Gimp.PlugIn):
                 except Exception:
                     pass
 
+    def _push_paint_context(self):
+        """Push the context and reset the settings that change how paint lands.
+
+        context_push() starts from a copy of the current context, so an
+        opacity or paint mode left by an earlier call (e.g. via call_api)
+        would otherwise blend every fill and stroke. Pair with context_pop().
+        """
+        Gimp.context_push()
+        Gimp.context_set_opacity(100.0)
+        Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)
+
     def _apply_gegl_filter(self, image, drawable, op_name, props):
         """Apply a GEGL operation to a drawable and merge it destructively.
 
@@ -2929,7 +2940,7 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 layer = Gimp.Layer.new(image, name, width, height, layer_type, opacity, mode)
                 image.insert_layer(layer, None, position)
-                Gimp.context_push()
+                self._push_paint_context()
                 try:
                     if fill.lower() == "transparent":
                         layer.add_alpha()
@@ -3131,7 +3142,7 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
-            Gimp.context_push()
+            self._push_paint_context()
             try:
                 Gimp.Selection.all(image)
                 fg = Gegl.Color.new(color_str)
@@ -3157,7 +3168,7 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
-            Gimp.context_push()
+            self._push_paint_context()
             try:
                 if fill_type == "transparent":
                     # Ensure layer has alpha channel before deleting pixels
@@ -3211,12 +3222,11 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
-            Gimp.context_push()
+            self._push_paint_context()
             try:
                 if color_str:
                     Gimp.context_set_foreground(Gegl.Color.new(color_str))
                 Gimp.context_set_brush_size(line_width)
-                Gimp.context_set_opacity(100.0)
                 coords = [x1, y1, x2, y2]
                 if tool == "paintbrush":
                     Gimp.paintbrush_default(drawable, coords)
@@ -3245,13 +3255,12 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
-            Gimp.context_push()
+            self._push_paint_context()
             try:
                 if color_str:
                     Gimp.context_set_foreground(Gegl.Color.new(color_str))
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
-                Gimp.context_set_opacity(100.0)
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
                 pdb = Gimp.get_pdb()
                 proc = pdb.lookup_procedure("gimp-drawable-edit-stroke-selection")
@@ -3283,13 +3292,12 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
-            Gimp.context_push()
+            self._push_paint_context()
             try:
                 if color_str:
                     Gimp.context_set_foreground(Gegl.Color.new(color_str))
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
-                Gimp.context_set_opacity(100.0)
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
                 pdb = Gimp.get_pdb()
                 proc = pdb.lookup_procedure("gimp-drawable-edit-stroke-selection")
@@ -3320,7 +3328,7 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
-            Gimp.context_push()
+            self._push_paint_context()
             try:
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
@@ -3348,7 +3356,7 @@ class MCPPlugin(Gimp.PlugIn):
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
-            Gimp.context_push()
+            self._push_paint_context()
             try:
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
                 Gimp.context_set_foreground(Gegl.Color.new(color_str))
