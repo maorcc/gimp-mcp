@@ -144,6 +144,53 @@ t('add_text',   cmd('add_text',   {'image_index': 0, 'text': 'Hello', 'x': 10, '
 t('list_fonts', cmd('list_fonts', {}))
 
 print()
+print("=== Cat 7b: Paint tools ignore a leftover context ===")
+# context_push() copies the current context, so an opacity or paint mode left
+# by an earlier call_api used to blend into every fill and stroke. Leave
+# opacity at 50% and paint mode at DIFFERENCE (black on white would come out
+# white), then check each tool still paints solid black.
+cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
+_BLACK = [0, 0, 0]
+
+
+def _context(opacity, mode):
+    return cmd('exec', {'args': ['python-fu-exec', [
+        f'Gimp.context_set_opacity({opacity})',
+        f'Gimp.context_set_paint_mode(Gimp.LayerMode.{mode})',
+    ]]})
+
+
+def _paint_check(name, tool, params, x, y, layer_name=None):
+    _context(100.0, 'NORMAL')
+    cmd('select_none', {'image_index': 0})
+    cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})
+    _context(50.0, 'DIFFERENCE')
+    t(name, cmd(tool, dict(params, image_index=0)))
+    _context(100.0, 'NORMAL')
+    q = {'image_index': 0, 'x': x, 'y': y}
+    if layer_name:
+        q['layer_name'] = layer_name
+    p = cmd('get_pixel_color', q).get('results', {})
+    chk(name + '_solid', p.get('color_rgb') == _BLACK and p.get('alpha') == 255, p)
+
+
+_paint_check('ctx_fill_layer',     'fill_layer',     {'color': '#000000'}, 100, 100)
+_paint_check('ctx_fill_rectangle', 'fill_rectangle', {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000'}, 100, 100)
+_paint_check('ctx_fill_ellipse',   'fill_ellipse',   {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000'}, 100, 100)
+cmd('select_rectangle', {'image_index': 0, 'x': 50, 'y': 50, 'width': 100, 'height': 100})
+_context(50.0, 'DIFFERENCE')
+t('ctx_fill_selection', cmd('fill_selection', {'image_index': 0, 'fill_type': 'foreground', 'color': '#000000'}))
+_context(100.0, 'NORMAL')
+_p = cmd('get_pixel_color', {'image_index': 0, 'x': 100, 'y': 100}).get('results', {})
+chk('ctx_fill_selection_solid', _p.get('color_rgb') == _BLACK, _p)
+cmd('select_none', {'image_index': 0})
+_paint_check('ctx_draw_line',      'draw_line',      {'x1': 10, 'y1': 100, 'x2': 190, 'y2': 100, 'color': '#000000', 'width': 6}, 100, 100)
+_paint_check('ctx_draw_rectangle', 'draw_rectangle', {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000', 'line_width': 6.0}, 50, 100)
+_paint_check('ctx_draw_ellipse',   'draw_ellipse',   {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000', 'line_width': 6.0}, 50, 100)
+_paint_check('ctx_create_layer',   'create_layer',   {'name': 'CtxLayer', 'fill': '#000000'}, 100, 100, layer_name='CtxLayer')
+cmd('delete_layer', {'image_index': 0, 'layer_name': 'CtxLayer'})
+
+print()
 print("=== Cat 8: Filters ===")
 t('gaussian_blur', cmd('apply_gaussian_blur', {'image_index': 0, 'radius': 2.0}))
 t('pixelate',      cmd('apply_pixelate',      {'image_index': 0, 'block_size': 5}))
