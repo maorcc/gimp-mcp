@@ -26,7 +26,8 @@ jobs:
         with:
           # No later step needs git auth, so keep the token out of .git/config.
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v6
+      # setup-uv publishes no major tags since v8; pin an exact (immutable) release.
+      - uses: astral-sh/setup-uv@v10.3.3
       - name: Check the tag matches the package version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
