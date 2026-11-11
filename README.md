@@ -90,10 +90,12 @@ Launch GIMP once (so its config folder exists), close it, then run:
 uvx gimp-mcp-plugin@latest install-plugin
 ```
 
-This copies the plugin into the newest GIMP 3.x config folder it finds (Linux standard, Snap and Flatpak locations, macOS, Windows) and makes it executable. Restart GIMP afterwards.
+This copies the plugin into the newest GIMP 3.x config folder it finds (Linux standard, Snap and Flatpak locations, macOS, Windows) and makes it executable. Restart GIMP afterward.
 
 - `--dry-run` shows where it would install without writing anything.
 - `--gimp-dir DIR` installs into a specific GIMP config folder, e.g. `--gimp-dir ~/.config/GIMP/3.2`.
+
+If you have more than one GIMP 3 installation (e.g. a system GIMP and a Flatpak), the newest folder found may not be the one your GIMP uses. Check the folder shown in GIMP's **Edit → Preferences → Folders → Plug-ins** and pass the folder that contains `plug-ins` with `--gimp-dir`.
 
 > **Which folder does GIMP use?** GIMP names its per-user folder after its **major.minor**
 > version (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the
