@@ -172,6 +172,13 @@ server = MCPServerStdio('uvx', args=['gimp-mcp-plugin@latest'])
 agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ```
 
+#### Cancelling long commands
+
+GIMP runs one command at a time, in the order they're sent. While it works, the MCP server
+stays responsive, so your client can cancel a call. The cancel returns at once: a command
+that's still waiting its turn never runs, but one GIMP has already started is finished in
+the background. Check the image before retrying a cancelled edit, or it may be applied twice.
+
 ### Updating
 
 The plugin and the MCP server must be the same version. `check_server` and `get_gimp_info` report a mismatch and print the command that fixes it. To update both:
