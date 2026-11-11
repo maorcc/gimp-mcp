@@ -4,12 +4,15 @@
 
 from mcp.server.fastmcp import FastMCP, Context, Image
 import argparse
+import asyncio
+import functools
 import os
 import re
 import shutil
 import sys
 import socket
 import tempfile
+import threading
 import json
 import logging
 import base64
@@ -17,6 +20,8 @@ import traceback
 import time
 from pathlib import Path
 from importlib import resources
+
+import anyio
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
@@ -144,21 +149,12 @@ class GimpConnection:
         finally:
             self.disconnect()
 
-# Global connection
-_gimp_connection = None
-
 def get_gimp_connection():
-    global _gimp_connection
-    if _gimp_connection is None:
-        _gimp_connection = GimpConnection()
-        _gimp_connection.connect()
-    return _gimp_connection
-
-def reset_gimp_connection():
-    global _gimp_connection
-    if _gimp_connection:
-        _gimp_connection.disconnect()
-    _gimp_connection = None
+    """Open a new connection for each call, so calls running at the same time
+    (a cancelled call still finishing in async mode) never share a socket."""
+    conn = GimpConnection()
+    conn.connect()
+    return conn
 
 def _read_doc(name):
     """Read a guidance doc from docs/ in a checkout, or from the installed package.
@@ -173,7 +169,73 @@ def _read_doc(name):
 # MCP server
 mcp = FastMCP("GimpMCP", instructions="GIMP integration through MCP — with new_canvas, check_server, restart_server")
 
+# Sync mode decides what cancelling a tool call does (issue #83):
+# - "sync" (default, the behaviour before #83): the call waits until GIMP finishes,
+#   then ends as cancelled.
+# - "async": the call returns as cancelled at once; GIMP still finishes the command.
+# Either way the event loop stays free while GIMP works, so pings are answered.
+# Read on every call, so set_sync_mode changes it at runtime.
+SYNC_MODE_VAR = "GIMP_MCP_SYNC_MODE"
+SYNC_MODES = ("sync", "async")
+
+
+def _sync_mode():
+    mode = os.environ.get(SYNC_MODE_VAR, "sync").strip().lower()
+    return mode if mode in SYNC_MODES else "sync"
+
+
+# Tool bodies are blocking (socket I/O to the plugin), so they run in a worker thread.
+# _call_order (asyncio.Lock, FIFO) starts calls in the order the client sent them.
+# _gimp_busy is held by the worker thread itself, so a call abandoned in async mode
+# keeps it until it finishes, and the next call can't interleave with it.
+_call_order = asyncio.Lock()
+_gimp_busy = threading.Lock()
+
+
+def _run_exclusive(fn, args, kwargs):
+    with _gimp_busy:
+        return fn(*args, **kwargs)
+
+
+def gimp_tool(*tool_args, **tool_kwargs):
+    """Like @mcp.tool(), but runs the blocking tool body off the event loop.
+
+    FastMCP gets an async wrapper; the module keeps the plain sync function, so
+    tools can still call each other (restart_server -> check_server) and tests can
+    call them directly.
+    """
+    def decorate(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            async with _call_order:
+                return await anyio.to_thread.run_sync(
+                    _run_exclusive, fn, args, kwargs,
+                    abandon_on_cancel=_sync_mode() == "async",
+                )
+        mcp.tool(*tool_args, **tool_kwargs)(wrapper)
+        return fn
+    return decorate
+
+
 @mcp.tool()
+def set_sync_mode(mode: str) -> dict:
+    """Set what cancelling a tool call does while GIMP is working.
+
+    - "sync" (default): the cancelled call waits until GIMP finishes the command.
+    - "async": the cancelled call returns at once; GIMP still finishes the command
+      in the background, so check the image before retrying an edit, or it may be
+      applied twice.
+
+    Applies to this server process from the next call on. A restart goes back to the
+    GIMP_MCP_SYNC_MODE value from the MCP client config (or "sync").
+    """
+    mode = str(mode).strip().lower()
+    if mode not in SYNC_MODES:
+        return {"status": "error", "error": f"mode must be one of {', '.join(SYNC_MODES)}"}
+    os.environ[SYNC_MODE_VAR] = mode
+    return {"status": "success", "sync_mode": mode}
+
+@gimp_tool()
 def check_server(ctx: Context) -> dict:
     """Check whether the GIMP MCP plugin socket is reachable and responding.
 
@@ -185,6 +247,7 @@ def check_server(ctx: Context) -> dict:
     - version_warning: present when they don't match; pass it on to the user
     - error: description if not connected, or if GIMP is reachable but get_gimp_info failed
       (connected stays true and no version check is done)
+    - sync_mode: "sync" or "async" (see set_sync_mode)
 
     Use this before any other operation to verify the GIMP plugin is running.
     If not connected, open GIMP and run Tools > MCP > Start MCP Server.
@@ -194,7 +257,8 @@ def check_server(ctx: Context) -> dict:
         test_conn.connect()
         result = test_conn.send_command("get_gimp_info")
     except Exception as e:
-        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
+        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT,
+                "sync_mode": _sync_mode(), "error": str(e)}
     if result.get("status") != "success":
         # The plugin answered, so it's reachable, but without info there's no version to
         # compare. Report the error rather than a misleading "plugin is outdated" warning.
@@ -202,6 +266,7 @@ def check_server(ctx: Context) -> dict:
             "connected": True,
             "host": GIMP_HOST,
             "port": GIMP_PORT,
+            "sync_mode": _sync_mode(),
             "error": f"get_gimp_info failed: {result.get('error', 'Unknown error')}",
         }
     results = result.get("results", {})
@@ -211,11 +276,12 @@ def check_server(ctx: Context) -> dict:
         "host": GIMP_HOST,
         "port": GIMP_PORT,
         "gimp_version": version,
+        "sync_mode": _sync_mode(),
         **version_status(results.get("mcp_plugin_version")),
     }
 
 
-@mcp.tool()
+@gimp_tool()
 def restart_server(ctx: Context) -> dict:
     """Drop and re-establish the connection to the GIMP MCP plugin.
 
@@ -226,12 +292,13 @@ def restart_server(ctx: Context) -> dict:
 
     Returns the new connection status (same format as check_server).
     """
-    reset_gimp_connection()
+    # Every call opens its own connection, so there's no shared socket to drop.
+    # This runs in a worker thread (see gimp_tool), so the sleep doesn't block the event loop.
     time.sleep(0.5)
     return check_server(ctx)
 
 
-@mcp.tool()
+@gimp_tool()
 def new_canvas(
     ctx: Context,
     width: int,
@@ -282,7 +349,7 @@ def new_canvas(
         raise Exception(f"Failed to create new canvas: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None) -> Image:
     """Get the current open image in GIMP as an Image object with optional scaling and region selection.
 
@@ -348,7 +415,7 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
         raise Exception(f"Failed to get image bitmap: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_image_metadata(ctx: Context) -> dict:
     """Get metadata about the current open image in GIMP without the bitmap data.
     
@@ -380,7 +447,7 @@ def get_image_metadata(ctx: Context) -> dict:
         raise Exception(f"Failed to get image metadata: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_gimp_info(ctx: Context) -> dict:
     """Get comprehensive information about the GIMP installation and environment.
 
@@ -414,7 +481,7 @@ def get_gimp_info(ctx: Context) -> dict:
         traceback.print_exc()
         raise Exception(f"Failed to get GIMP info: {e}")
 
-@mcp.tool()
+@gimp_tool()
 def get_state_snapshot(
     ctx: Context,
     image_index: int = 0,
@@ -472,7 +539,7 @@ def get_state_snapshot(
         raise Exception(f"get_state_snapshot failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_context_state(ctx: Context) -> dict:
     """Get the current GIMP context state (colors, brush, settings).
 
@@ -509,7 +576,7 @@ def get_context_state(ctx: Context) -> dict:
         raise Exception(f"Failed to get context state: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) -> str:
     """Call GIMP 3.2 API methods through PyGObject console.
 
@@ -622,7 +689,7 @@ def gimp_iterative_workflow() -> str:
 # CATEGORY 1 — File Operations
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def open_image(ctx: Context, file_path: str) -> dict:
     """Open an image file in GIMP and create a display window.
 
@@ -647,7 +714,7 @@ def open_image(ctx: Context, file_path: str) -> dict:
         raise Exception(f"open_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def save_xcf(ctx: Context, file_path: str, image_index: int = 0) -> dict:
     """Save the current image as a GIMP XCF file (preserves all layers and metadata).
 
@@ -670,7 +737,7 @@ def save_xcf(ctx: Context, file_path: str, image_index: int = 0) -> dict:
         raise Exception(f"save_xcf failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def export_image(
     ctx: Context,
     file_path: str,
@@ -708,7 +775,7 @@ def export_image(
         raise Exception(f"export_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def batch_export(
     ctx: Context,
     output_dir: str,
@@ -754,7 +821,7 @@ def batch_export(
 # CATEGORY 2 — Image Adjustments
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = None) -> dict:
     """Automatically stretch the tonal range of an image (auto levels / auto stretch contrast).
 
@@ -775,7 +842,7 @@ def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = Non
         raise Exception(f"auto_levels failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def adjust_curves(
     ctx: Context,
     preset: str = "s_curve",
@@ -812,7 +879,7 @@ def adjust_curves(
         raise Exception(f"adjust_curves failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def adjust_brightness_contrast(
     ctx: Context,
     brightness: int = 0,
@@ -846,7 +913,7 @@ def adjust_brightness_contrast(
         raise Exception(f"adjust_brightness_contrast failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def adjust_hue_saturation(
     ctx: Context,
     hue: float = 0,
@@ -886,7 +953,7 @@ def adjust_hue_saturation(
         raise Exception(f"adjust_hue_saturation failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def adjust_color_balance(
     ctx: Context,
     cyan_red: float = 0,
@@ -926,7 +993,7 @@ def adjust_color_balance(
         raise Exception(f"adjust_color_balance failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def sharpen(
     ctx: Context,
     amount: float = 50.0,
@@ -963,7 +1030,7 @@ def sharpen(
         raise Exception(f"sharpen failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def blur(
     ctx: Context,
     radius_x: float = 5.0,
@@ -997,7 +1064,7 @@ def blur(
         raise Exception(f"blur failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def denoise(
     ctx: Context,
     strength: int = 50,
@@ -1028,7 +1095,7 @@ def denoise(
         raise Exception(f"denoise failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def desaturate(
     ctx: Context,
     mode: str = "luminosity",
@@ -1059,7 +1126,7 @@ def desaturate(
         raise Exception(f"desaturate failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def invert_colors(
     ctx: Context,
     image_index: int = 0,
@@ -1091,7 +1158,7 @@ def invert_colors(
 # CATEGORY 3 — Resize & Transform
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def scale_image(
     ctx: Context,
     width: int,
@@ -1125,7 +1192,7 @@ def scale_image(
         raise Exception(f"scale_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def scale_to_fit(
     ctx: Context,
     max_width: int,
@@ -1159,7 +1226,7 @@ def scale_to_fit(
         raise Exception(f"scale_to_fit failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def crop_to_selection(
     ctx: Context,
     autocrop: bool = False,
@@ -1187,7 +1254,7 @@ def crop_to_selection(
         raise Exception(f"crop_to_selection failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def crop_to_rect(
     ctx: Context,
     x: int,
@@ -1222,7 +1289,7 @@ def crop_to_rect(
         raise Exception(f"crop_to_rect failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def rotate_image(
     ctx: Context,
     angle: float,
@@ -1251,7 +1318,7 @@ def rotate_image(
         raise Exception(f"rotate_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def flip_image(
     ctx: Context,
     direction: str = "horizontal",
@@ -1279,7 +1346,7 @@ def flip_image(
         raise Exception(f"flip_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def resize_canvas(
     ctx: Context,
     width: int,
@@ -1320,7 +1387,7 @@ def resize_canvas(
 # CATEGORY 4 — Selections
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def select_rectangle(
     ctx: Context,
     x: int,
@@ -1356,7 +1423,7 @@ def select_rectangle(
         raise Exception(f"select_rectangle failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def select_ellipse(
     ctx: Context,
     x: int,
@@ -1392,7 +1459,7 @@ def select_ellipse(
         raise Exception(f"select_ellipse failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def select_by_color(
     ctx: Context,
     color: str,
@@ -1429,7 +1496,7 @@ def select_by_color(
         raise Exception(f"select_by_color failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def select_all(ctx: Context, image_index: int = 0) -> dict:
     """Select the entire image canvas.
 
@@ -1449,7 +1516,7 @@ def select_all(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"select_all failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def select_none(ctx: Context, image_index: int = 0) -> dict:
     """Remove / deselect all selections.
 
@@ -1469,7 +1536,7 @@ def select_none(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"select_none failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def invert_selection(ctx: Context, image_index: int = 0) -> dict:
     """Invert the current selection (select what is not selected).
 
@@ -1489,7 +1556,7 @@ def invert_selection(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"invert_selection failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def modify_selection(
     ctx: Context,
     operation: str,
@@ -1524,7 +1591,7 @@ def modify_selection(
 # CATEGORY 5 — Layer Operations
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def create_layer(
     ctx: Context,
     name: str = "New Layer",
@@ -1564,7 +1631,7 @@ def create_layer(
         raise Exception(f"create_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def duplicate_layer(
     ctx: Context,
     layer_name: str | None = None,
@@ -1592,7 +1659,7 @@ def duplicate_layer(
         raise Exception(f"duplicate_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def delete_layer(
     ctx: Context,
     layer_name: str | None = None,
@@ -1625,7 +1692,7 @@ def delete_layer(
         raise Exception(f"delete_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def rename_layer(
     ctx: Context,
     new_name: str,
@@ -1659,7 +1726,7 @@ def rename_layer(
         raise Exception(f"rename_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def set_layer_properties(
     ctx: Context,
     layer_name: str | None = None,
@@ -1695,7 +1762,7 @@ def set_layer_properties(
         raise Exception(f"set_layer_properties failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def reorder_layer(
     ctx: Context,
     new_position: int,
@@ -1726,7 +1793,7 @@ def reorder_layer(
         raise Exception(f"reorder_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def flatten_image(ctx: Context, image_index: int = 0) -> dict:
     """Flatten all layers into a single background layer.
 
@@ -1746,7 +1813,7 @@ def flatten_image(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"flatten_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def merge_visible_layers(ctx: Context, image_index: int = 0) -> dict:
     """Merge all visible layers into a single layer.
 
@@ -1766,7 +1833,7 @@ def merge_visible_layers(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"merge_visible_layers failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def list_layers(ctx: Context, image_index: int = 0) -> dict:
     """List all layers in an image with their properties.
 
@@ -1790,7 +1857,7 @@ def list_layers(ctx: Context, image_index: int = 0) -> dict:
 # CATEGORY 6 — Color & Paint
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def fill_layer(
     ctx: Context,
     color: str,
@@ -1819,7 +1886,7 @@ def fill_layer(
         raise Exception(f"fill_layer failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def fill_selection(
     ctx: Context,
     color: str | None = None,
@@ -1851,7 +1918,7 @@ def fill_selection(
         raise Exception(f"fill_selection failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def set_colors(
     ctx: Context,
     foreground: str | None = None,
@@ -1878,7 +1945,7 @@ def set_colors(
         raise Exception(f"set_colors failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def draw_line(
     ctx: Context,
     x1: float,
@@ -1919,7 +1986,7 @@ def draw_line(
         raise Exception(f"draw_line failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def draw_rectangle(
     ctx: Context,
     x: int,
@@ -1958,7 +2025,7 @@ def draw_rectangle(
         raise Exception(f"draw_rectangle failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def draw_ellipse(
     ctx: Context,
     x: int,
@@ -1997,7 +2064,7 @@ def draw_ellipse(
         raise Exception(f"draw_ellipse failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def fill_rectangle(
     ctx: Context,
     x: int,
@@ -2033,7 +2100,7 @@ def fill_rectangle(
         raise Exception(f"fill_rectangle failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def fill_ellipse(
     ctx: Context,
     x: int,
@@ -2069,7 +2136,7 @@ def fill_ellipse(
         raise Exception(f"fill_ellipse failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def gradient_fill(
     ctx: Context,
     color1: str = "black",
@@ -2115,7 +2182,7 @@ def gradient_fill(
 # CATEGORY 7 — Text
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def add_text(
     ctx: Context,
     text: str,
@@ -2153,7 +2220,7 @@ def add_text(
         raise Exception(f"add_text failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def edit_text(
     ctx: Context,
     layer_name: str,
@@ -2190,7 +2257,7 @@ def edit_text(
         raise Exception(f"edit_text failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def list_fonts(ctx: Context, filter: str | None = None) -> dict:
     """List available fonts installed in GIMP.
 
@@ -2214,7 +2281,7 @@ def list_fonts(ctx: Context, filter: str | None = None) -> dict:
 # CATEGORY 8 — Filters & Effects
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def apply_drop_shadow(
     ctx: Context,
     offset_x: int = 5,
@@ -2252,7 +2319,7 @@ def apply_drop_shadow(
         raise Exception(f"apply_drop_shadow failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_gaussian_blur(
     ctx: Context,
     radius: float = 5.0,
@@ -2281,7 +2348,7 @@ def apply_gaussian_blur(
         raise Exception(f"apply_gaussian_blur failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_pixelate(
     ctx: Context,
     block_size: int = 10,
@@ -2310,7 +2377,7 @@ def apply_pixelate(
         raise Exception(f"apply_pixelate failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_emboss(
     ctx: Context,
     azimuth: float = 315,
@@ -2344,7 +2411,7 @@ def apply_emboss(
         raise Exception(f"apply_emboss failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_vignette(
     ctx: Context,
     softness: float = 0.8,
@@ -2376,7 +2443,7 @@ def apply_vignette(
         raise Exception(f"apply_vignette failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def apply_noise(
     ctx: Context,
     amount: float = 0.2,
@@ -2409,7 +2476,7 @@ def apply_noise(
 # CATEGORY 9 — Export Pipelines
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def export_icon_sizes(
     ctx: Context,
     output_dir: str,
@@ -2445,7 +2512,7 @@ def export_icon_sizes(
         raise Exception(f"export_icon_sizes failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def export_web_optimized(
     ctx: Context,
     output_dir: str,
@@ -2484,7 +2551,7 @@ def export_web_optimized(
         raise Exception(f"export_web_optimized failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def warp_region(
     ctx: Context,
     vectors: list,
@@ -2530,7 +2597,7 @@ def warp_region(
         raise Exception(f"warp_region failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def batch_resize(
     ctx: Context,
     width: int | None = None,
@@ -2561,7 +2628,7 @@ def batch_resize(
         raise Exception(f"batch_resize failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def export_sprite_sheet(
     ctx: Context,
     output_path: str,
@@ -2595,7 +2662,7 @@ def export_sprite_sheet(
         raise Exception(f"export_sprite_sheet failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def export_social_media_kit(
     ctx: Context,
     output_dir: str,
@@ -2635,7 +2702,7 @@ def export_social_media_kit(
 # CATEGORY 10 — Utility
 # ─────────────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@gimp_tool()
 def list_images(ctx: Context) -> dict:
     """List all images currently open in GIMP.
 
@@ -2655,7 +2722,7 @@ def list_images(ctx: Context) -> dict:
         raise Exception(f"list_images failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def set_active_image(ctx: Context, image_index: int) -> dict:
     """Raise a specific image to the front / make it active in GIMP.
 
@@ -2675,7 +2742,7 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
         raise Exception(f"set_active_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     """Undo one or more operations on an image.
 
@@ -2696,7 +2763,7 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         raise Exception(f"undo failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     """Redo one or more previously undone operations on an image.
 
@@ -2717,7 +2784,7 @@ def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         raise Exception(f"redo failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def convert_color_mode(
     ctx: Context,
     mode: str,
@@ -2746,7 +2813,7 @@ def convert_color_mode(
         raise Exception(f"convert_color_mode failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def close_image(
     ctx: Context,
     image_index: int = 0,
@@ -2773,7 +2840,7 @@ def close_image(
         raise Exception(f"close_image failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
     """Get the bounding rectangle of the current selection.
 
@@ -2793,7 +2860,7 @@ def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"get_selection_bounds failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_pixel_color(
     ctx: Context,
     x: int,
@@ -2828,7 +2895,7 @@ def get_pixel_color(
         raise Exception(f"get_pixel_color failed: {e}")
 
 
-@mcp.tool()
+@gimp_tool()
 def get_histogram(
     ctx: Context,
     channel: str = "value",
