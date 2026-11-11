@@ -86,10 +86,24 @@ s = server.check_server(None)
 check("check_server reports a matching plugin",
       s["connected"] and s["version_ok"] and s["gimp_version"] == "3.2.8", str(s))
 
+for plugin_version, update in [("0.3.9", "Update the plugin"), ("0.10.0", "Update the server")]:
+    server.GimpConnection = fake_connection(
+        {"status": "success", "results": {"mcp_plugin_version": plugin_version}})
+    s = server.check_server(None)
+    check(f"check_server warns for plugin {plugin_version}",
+          s["connected"] and not s["version_ok"] and update in s.get("version_warning", ""), str(s))
+
 server.GimpConnection = fake_connection({"status": "error", "error": "boom"})
 s = server.check_server(None)
 check("check_server reports a get_gimp_info error, not an outdated plugin",
       s["connected"] and "boom" in s.get("error", "") and "version_warning" not in s, str(s))
+
+# get_gimp_info() adds the same version fields to the plugin's info.
+server.get_gimp_connection = lambda: fake_connection(
+    {"status": "success", "results": {"mcp_plugin_version": "0.3.9"}})(None, None)
+s = server.get_gimp_info(None)
+check("get_gimp_info warns about an older plugin",
+      s.get("version_ok") is False and "Update the plugin" in s.get("version_warning", ""), str(s))
 
 print(f"\n{len(failures)} failure(s)")
 sys.exit(1 if failures else 0)
