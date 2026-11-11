@@ -187,7 +187,7 @@ def _paint_check(name, tool, params, x, y, layer_name=None, select=None):
     cmd('select_none', {'image_index': 0})
     cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})  # so a black pixel can only come from the tool
     if select:
-        cmd('select_rectangle', dict(select, image_index=0))
+        t(name + '_select', cmd('select_rectangle', dict(select, image_index=0)))
     _context(50.0, 'DIFFERENCE')
     t(name, cmd(tool, dict(params, image_index=0)))
     _after = _read_context()
