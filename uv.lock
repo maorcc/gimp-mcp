@@ -239,7 +239,7 @@ wheels = [
 ]
 
 [[package]]
-name = "gimp-mcp"
+name = "gimp-mcp-plugin"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
