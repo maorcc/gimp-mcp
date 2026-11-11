@@ -47,7 +47,7 @@ jobs:
           assert s._read_doc('iterative_workflow.md')
           print('wheel OK:', s.__file__)
           "
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -61,7 +61,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
