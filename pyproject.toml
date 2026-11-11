@@ -24,7 +24,9 @@ gimp-mcp-plugin = "gimp_mcp_server:main"
 gimp-mcp-server = "gimp_mcp_server:main"
 
 [tool.setuptools]
-py-modules = ["gimp_mcp_server"]
+# gimp-mcp-plugin.py is shipped too, for `gimp-mcp-plugin install-plugin` (it imports gi,
+# which only exists inside GIMP, so it is never imported from the package).
+py-modules = ["gimp_mcp_server", "gimp-mcp-plugin"]
 # Ship docs/*.md (read by the MCP prompts) as the gimp_mcp_docs package, without moving them.
 packages = ["gimp_mcp_docs"]
 package-dir = { gimp_mcp_docs = "docs" }
