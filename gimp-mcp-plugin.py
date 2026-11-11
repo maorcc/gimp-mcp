@@ -2040,18 +2040,24 @@ class MCPPlugin(Gimp.PlugIn):
         filtr = Gimp.DrawableFilter.new(drawable, op_name, op_name)
         if filtr is None:
             raise RuntimeError(f"Could not create GEGL filter {op_name!r}")
-        config = filtr.get_config()
-        for key, value in props.items():
-            pspec = config.find_property(key)
-            if pspec is None:
-                raise ValueError(f"{op_name} has no property {key!r}")
-            lo = getattr(pspec, "minimum", None)
-            hi = getattr(pspec, "maximum", None)
-            if isinstance(value, (int, float)) and lo is not None and not lo <= value <= hi:
-                raise ValueError(f"{op_name} {key}={value} is outside [{lo}, {hi}]")
-            config.set_property(key, value)
-        filtr.update()
-        drawable.merge_filter(filtr)
+        try:
+            config = filtr.get_config()
+            for key, value in props.items():
+                pspec = config.find_property(key)
+                if pspec is None:
+                    raise ValueError(f"{op_name} has no property {key!r}")
+                lo = getattr(pspec, "minimum", None)
+                hi = getattr(pspec, "maximum", None)
+                if isinstance(value, (int, float)) and lo is not None and not lo <= value <= hi:
+                    raise ValueError(f"{op_name} {key}={value} is outside [{lo}, {hi}]")
+                config.set_property(key, value)
+            filtr.update()
+            drawable.merge_filter(filtr)
+        except Exception:
+            # GIMP keeps an unmerged filter alive until it is deleted.
+            if filtr.is_valid():
+                filtr.delete()
+            raise
 
     # =========================================================================
     # CATEGORY 1 — File Operations
