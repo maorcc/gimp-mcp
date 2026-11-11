@@ -2324,7 +2324,7 @@ def apply_emboss(
     Parameters:
     - azimuth: Light direction in degrees 0-360 (default 315 = top-left)
     - elevation: Light elevation angle 0-90 (default 45)
-    - depth: Effect depth/intensity (default 2)
+    - depth: Effect depth/intensity, 1-100 (default 2)
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
 
@@ -2347,16 +2347,16 @@ def apply_emboss(
 @mcp.tool()
 def apply_vignette(
     ctx: Context,
-    softness: float = 3.0,
-    shape: float = 1.0,
+    softness: float = 0.8,
+    shape: str = "circle",
     layer_name: str | None = None,
     image_index: int = 0
 ) -> dict:
     """Apply a vignette darkening effect around the edges of a layer.
 
     Parameters:
-    - softness: Edge softness / fade width (default 3.0)
-    - shape: Shape factor — 1.0 = elliptical (default), values >1 = more rectangular
+    - softness: Edge softness / fade width, 0.0-1.0 (default 0.8)
+    - shape: "circle" (default), "square", "diamond", "horizontal" or "vertical"
     - layer_name: Target layer; defaults to active layer
     - image_index: Target image index (default 0)
 

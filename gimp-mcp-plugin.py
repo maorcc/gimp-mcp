@@ -30,6 +30,7 @@ import signal
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
+VIGNETTE_SHAPES = ("circle", "square", "diamond", "horizontal", "vertical")  # gegl:vignette shape
 
 # Reported to the MCP server, which warns when it doesn't match its own version.
 # Keep in sync with SERVER_VERSION in gimp_mcp_server.py and version in pyproject.toml
@@ -2029,45 +2030,34 @@ class MCPPlugin(Gimp.PlugIn):
                     pass
 
     def _apply_gegl_filter(self, image, drawable, op_name, props):
-        """Apply a GEGL operation to a drawable via gimp-drawable-filter-new."""
-        pdb = Gimp.get_pdb()
-        # Try the GEGL filter approach via PDB
-        filter_proc = pdb.lookup_procedure("gimp-drawable-filter-new")
-        if filter_proc:
-            cfg = filter_proc.create_config()
-            cfg.set_property("drawable", drawable)
-            cfg.set_property("operation-name", op_name)
-            cfg.set_property("name", op_name)
-            result = filter_proc.run(cfg)
-            # Get the filter object
-            try:
-                filtr = result.index(0)
-                for k, v in props.items():
-                    try:
-                        filtr.set_property(k, v)
-                    except Exception:
-                        pass
-                # Apply filter (merge)
-                apply_proc = pdb.lookup_procedure("gimp-drawable-merge-filter")
-                if apply_proc:
-                    acfg = apply_proc.create_config()
-                    acfg.set_property("drawable", drawable)
-                    acfg.set_property("filter", filtr)
-                    apply_proc.run(acfg)
-            except Exception:
-                pass
-        else:
-            # Fallback: execute via exec context
-            props_code = ", ".join(f'"{k}", {repr(v)}' for k, v in props.items())
-            cmds = [
-                "from gi.repository import Gimp, Gegl",
-                "_img = Gimp.get_images()[0]",
-                "_d = (_img.get_selected_layers() or _img.get_layers() or [None])[0]",
-                f"_d.apply_drawable_filter_new('{op_name}', '', [{props_code}])",
-                "Gimp.displays_flush()",
-            ]
-            for cmd in cmds:
-                exec(cmd, self.context)
+        """Apply a GEGL operation to a drawable and merge it destructively.
+
+        GEGL properties are set on the filter's config, not on the filter
+        itself. Unknown property names and out-of-range values raise instead
+        of being skipped, since GLib only warns about them and keeps the old
+        value, which would let a filter silently do the wrong thing.
+        """
+        filtr = Gimp.DrawableFilter.new(drawable, op_name, op_name)
+        if filtr is None:
+            raise RuntimeError(f"Could not create GEGL filter {op_name!r}")
+        try:
+            config = filtr.get_config()
+            for key, value in props.items():
+                pspec = config.find_property(key)
+                if pspec is None:
+                    raise ValueError(f"{op_name} has no property {key!r}")
+                lo = getattr(pspec, "minimum", None)
+                hi = getattr(pspec, "maximum", None)
+                if isinstance(value, (int, float)) and lo is not None and not lo <= value <= hi:
+                    raise ValueError(f"{op_name} {key}={value} is outside [{lo}, {hi}]")
+                config.set_property(key, value)
+            filtr.update()
+            drawable.merge_filter(filtr)
+        except Exception:
+            # GIMP keeps an unmerged filter alive until it is deleted.
+            if filtr.is_valid():
+                filtr.delete()
+            raise
 
     # =========================================================================
     # CATEGORY 1 — File Operations
@@ -3862,8 +3852,8 @@ class MCPPlugin(Gimp.PlugIn):
                 self._apply_gegl_filter(image, drawable, "gegl:emboss", {
                     "azimuth":   azimuth,
                     "elevation": elevation,
-                    "depth":     depth,
-                    "emboss":    True,
+                    "depth":     int(round(depth)),
+                    "type":      "emboss",
                 })
             finally:
                 image.undo_group_end()
@@ -3877,8 +3867,10 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             image_index = int(params.get("image_index", 0))
             layer_name  = params.get("layer_name", None)
-            softness    = float(params.get("softness", 3.0))
-            shape       = float(params.get("shape", 1.0))
+            softness    = float(params.get("softness", 0.8))
+            shape       = str(params.get("shape", "circle")).lower()
+            if shape not in VIGNETTE_SHAPES:
+                return {"status": "error", "error": f"shape must be one of {', '.join(VIGNETTE_SHAPES)}"}
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
@@ -3906,9 +3898,9 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(image, drawable, "gegl:noise-hsv", {
-                    "value": amount,
-                    "saturation": 0.0,
-                    "hue": 0.0,
+                    "value-distance":      amount,
+                    "saturation-distance": 0.0,
+                    "hue-distance":        0.0,
                 })
             finally:
                 image.undo_group_end()
