@@ -195,6 +195,35 @@ def _gimp_worker():
 threading.Thread(target=_gimp_worker, name="gimp-calls", daemon=True).start()
 
 
+class _GimpCallWaiter(asyncio.Future):
+    """What a tool wrapper awaits while its call is queued or running.
+
+    Cancelling it cancels the queued call immediately. asyncio.wrap_future would only
+    do that on the next event-loop iteration, and by then the worker may have started
+    a call the client was already told is cancelled.
+    """
+
+    def __init__(self, call):
+        super().__init__()
+        self._call = call  # the concurrent.futures.Future the worker runs
+        loop = self.get_loop()
+        call.add_done_callback(lambda c: loop.call_soon_threadsafe(self._copy_outcome, c))
+
+    def cancel(self, msg=None):
+        self._call.cancel()  # stops the call if the worker hasn't started it yet
+        return super().cancel(msg)
+
+    def _copy_outcome(self, call):
+        if self.done():
+            return
+        if call.cancelled():
+            super().cancel()
+        elif call.exception() is not None:
+            self.set_exception(call.exception())
+        else:
+            self.set_result(call.result())
+
+
 def gimp_tool(*tool_args, **tool_kwargs):
     """Like @mcp.tool(), but runs the blocking tool body on the GIMP worker thread.
 
@@ -205,11 +234,10 @@ def gimp_tool(*tool_args, **tool_kwargs):
     def decorate(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            future = concurrent.futures.Future()
-            _gimp_calls.put((future, fn, args, kwargs))
-            # Cancelling the await cancels the future, which only stops a call
-            # that hasn't started yet.
-            return await asyncio.wrap_future(future)
+            call = concurrent.futures.Future()
+            waiter = _GimpCallWaiter(call)
+            _gimp_calls.put((call, fn, args, kwargs))
+            return await waiter
         mcp.tool(*tool_args, **tool_kwargs)(wrapper)
         return fn
     return decorate

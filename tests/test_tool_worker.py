@@ -7,7 +7,8 @@
 - The event loop keeps running while a tool runs.
 - Cancelling a running call returns at once; the tool still finishes, and the next
   call starts only after it ends.
-- Cancelling a queued call means it never runs, and the calls behind it keep their order.
+- Cancelling a queued call means it never runs, and the calls behind it keep their order,
+  even if the worker reaches it before the event loop runs again.
 - Over the MCP protocol, a notifications/cancelled message gets the client its
   answer at once.
 - A tool that raises reports the error, and the worker keeps serving calls.
@@ -15,6 +16,7 @@
 No GIMP needed. Run with: uv run tests/test_tool_worker.py
 Exits 0 on pass, 1 on fail.
 """
+import asyncio
 import inspect
 import os
 import sys
@@ -75,6 +77,21 @@ def _test_slow(label: str, seconds: float) -> str:
 slow = registered("_test_slow")
 
 
+release = threading.Event()
+
+
+@server.gimp_tool(name="_test_gate")
+def _test_gate(label: str) -> str:
+    """Runs until the test sets `release`."""
+    record(f"start {label}")
+    release.wait(5)
+    record(f"end {label}")
+    return label
+
+
+gate = registered("_test_gate")
+
+
 @server.gimp_tool(name="_test_fail")
 def _test_fail() -> str:
     raise RuntimeError("boom")
@@ -88,9 +105,13 @@ def at(event):
     return next(t for e, t in log if e == event)
 
 
-async def wait_for(event):
-    while event not in events():
-        await anyio.sleep(0.005)
+async def wait_for(event, timeout=5):
+    try:
+        with anyio.fail_after(timeout):
+            while event not in events():
+                await anyio.sleep(0.005)
+    except TimeoutError:
+        raise AssertionError(f"timed out after {timeout} s waiting for {event!r}; got {events()}") from None
 
 
 async def test_order_and_free_loop():
@@ -161,6 +182,27 @@ async def test_cancel_queued():
           f"{events()} {results}")
 
 
+async def test_cancel_queued_before_loop_runs():
+    """The cancel must reach the queued call at once, not on the next loop iteration.
+
+    B is queued behind A. The test cancels B, lets A finish, and blocks the event loop
+    while the worker moves on, so nothing scheduled for later can stop B in time.
+    """
+    log.clear()
+    release.clear()
+    task_a = asyncio.create_task(gate(label="A"))
+    await wait_for("start A")
+    task_b = asyncio.create_task(slow(label="B", seconds=0.01))
+    await anyio.sleep(0.02)
+    task_b.cancel()
+    release.set()
+    time.sleep(0.3)  # deliberately block the loop while the worker picks the next call
+    await asyncio.gather(task_a, task_b, return_exceptions=True)
+    await slow(label="after", seconds=0.01)
+    check("a queued call cancelled just before the worker reaches it never runs",
+          "start B" not in events() and task_b.cancelled(), str(events()))
+
+
 async def test_protocol_cancel():
     """notifications/cancelled over a real MCP session."""
     log.clear()
@@ -206,6 +248,7 @@ async def main():
     await test_order_and_free_loop()
     await test_cancel_running()
     await test_cancel_queued()
+    await test_cancel_queued_before_loop_runs()
     await test_protocol_cancel()
     await test_tool_error()
 
