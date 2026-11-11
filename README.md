@@ -172,21 +172,12 @@ server = MCPServerStdio('uvx', args=['gimp-mcp-plugin@latest'])
 agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ```
 
-#### Sync mode (cancelling long commands)
+#### Cancelling long commands
 
-GIMP runs one command at a time. While it works, the MCP server stays responsive, but what
-happens when your client cancels a tool call depends on the **sync mode**:
-
-| Mode | A cancelled call |
-|---|---|
-| `sync` (default) | waits until GIMP finishes the command, as before 0.3.0 |
-| `async` | returns at once; GIMP still finishes the command in the background |
-
-In `async` mode a cancelled edit may already be applied, so check the image before retrying
-it. Set the starting mode with `"env": { "GIMP_MCP_SYNC_MODE": "async" }` in your MCP client
-config, or change it while the server runs by asking your client to call
-`set_sync_mode("async")` / `set_sync_mode("sync")`. A runtime change lasts until the server
-restarts. `check_server` reports the current mode.
+GIMP runs one command at a time, in the order they're sent. While it works, the MCP server
+stays responsive, so your client can cancel a call. The cancel returns at once: a command
+that's still waiting its turn never runs, but one GIMP has already started is finished in
+the background. Check the image before retrying a cancelled edit, or it may be applied twice.
 
 ### Updating
 
@@ -365,7 +356,6 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 |---|---|
 | `check_server` | Check the GIMP plugin socket is reachable and that the plugin version matches the server |
 | `restart_server` | Drop and re-establish the connection to the plugin |
-| `set_sync_mode` | Choose whether a cancelled call waits for GIMP (`sync`, default) or returns at once (`async`) |
 | `call_api` | Run arbitrary Python-Fu code inside GIMP (escape hatch for anything not covered above) |
 
 ---

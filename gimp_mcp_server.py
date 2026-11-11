@@ -5,12 +5,14 @@
 from mcp.server.fastmcp import FastMCP, Context, Image
 import argparse
 import asyncio
+import concurrent.futures
 import functools
 import os
 import re
 import shutil
 import sys
 import socket
+import queue
 import tempfile
 import threading
 import json
@@ -20,8 +22,6 @@ import traceback
 import time
 from pathlib import Path
 from importlib import resources
-
-import anyio
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
@@ -169,36 +169,34 @@ def _read_doc(name):
 # MCP server
 mcp = FastMCP("GimpMCP", instructions="GIMP integration through MCP — with new_canvas, check_server, restart_server")
 
-# Sync mode decides what cancelling a tool call does (issue #83):
-# - "sync" (default, the behaviour before #83): the call waits until GIMP finishes,
-#   then ends as cancelled.
-# - "async": the call returns as cancelled at once; GIMP still finishes the command.
-# Either way the event loop stays free while GIMP works, so pings are answered.
-# Read on every call, so set_sync_mode changes it at runtime.
-SYNC_MODE_VAR = "GIMP_MCP_SYNC_MODE"
-SYNC_MODES = ("sync", "async")
+# Tool bodies block on socket I/O to the plugin, so they run on one worker thread
+# instead of on FastMCP's event loop (issue #83). The event loop stays free to answer
+# pings and handle cancellation while GIMP works.
+#
+# The single worker takes calls from a FIFO queue, so they reach GIMP one at a time, in
+# the order they arrived, and never overlap. A cancelled call returns to the client at
+# once: if the worker had already started it, GIMP still finishes the command; if it
+# was still queued, it never runs.
+_gimp_calls = queue.SimpleQueue()
 
 
-def _sync_mode():
-    mode = os.environ.get(SYNC_MODE_VAR, "sync").strip().lower()
-    return mode if mode in SYNC_MODES else "sync"
+def _gimp_worker():
+    while True:
+        future, fn, args, kwargs = _gimp_calls.get()
+        if not future.set_running_or_notify_cancel():
+            continue  # cancelled while queued
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as e:
+            future.set_exception(e)
 
 
-# Tool bodies are blocking (socket I/O to the plugin), so they run in a worker thread.
-# _call_order (asyncio.Lock, FIFO) starts calls in the order the client sent them.
-# _gimp_busy is held by the worker thread itself, so a call abandoned in async mode
-# keeps it until it finishes, and the next call can't interleave with it.
-_call_order = asyncio.Lock()
-_gimp_busy = threading.Lock()
-
-
-def _run_exclusive(fn, args, kwargs):
-    with _gimp_busy:
-        return fn(*args, **kwargs)
+# Daemon, so the process can exit even while GIMP is still working on a command.
+threading.Thread(target=_gimp_worker, name="gimp-calls", daemon=True).start()
 
 
 def gimp_tool(*tool_args, **tool_kwargs):
-    """Like @mcp.tool(), but runs the blocking tool body off the event loop.
+    """Like @mcp.tool(), but runs the blocking tool body on the GIMP worker thread.
 
     FastMCP gets an async wrapper; the module keeps the plain sync function, so
     tools can still call each other (restart_server -> check_server) and tests can
@@ -207,33 +205,15 @@ def gimp_tool(*tool_args, **tool_kwargs):
     def decorate(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            async with _call_order:
-                return await anyio.to_thread.run_sync(
-                    _run_exclusive, fn, args, kwargs,
-                    abandon_on_cancel=_sync_mode() == "async",
-                )
+            future = concurrent.futures.Future()
+            _gimp_calls.put((future, fn, args, kwargs))
+            # Cancelling the await cancels the future, which only stops a call
+            # that hasn't started yet.
+            return await asyncio.wrap_future(future)
         mcp.tool(*tool_args, **tool_kwargs)(wrapper)
         return fn
     return decorate
 
-
-@mcp.tool()
-def set_sync_mode(mode: str) -> dict:
-    """Set what cancelling a tool call does while GIMP is working.
-
-    - "sync" (default): the cancelled call waits until GIMP finishes the command.
-    - "async": the cancelled call returns at once; GIMP still finishes the command
-      in the background, so check the image before retrying an edit, or it may be
-      applied twice.
-
-    Applies to this server process from the next call on. A restart goes back to the
-    GIMP_MCP_SYNC_MODE value from the MCP client config (or "sync").
-    """
-    mode = str(mode).strip().lower()
-    if mode not in SYNC_MODES:
-        return {"status": "error", "error": f"mode must be one of {', '.join(SYNC_MODES)}"}
-    os.environ[SYNC_MODE_VAR] = mode
-    return {"status": "success", "sync_mode": mode}
 
 @gimp_tool()
 def check_server(ctx: Context) -> dict:
@@ -247,7 +227,6 @@ def check_server(ctx: Context) -> dict:
     - version_warning: present when they don't match; pass it on to the user
     - error: description if not connected, or if GIMP is reachable but get_gimp_info failed
       (connected stays true and no version check is done)
-    - sync_mode: "sync" or "async" (see set_sync_mode)
 
     Use this before any other operation to verify the GIMP plugin is running.
     If not connected, open GIMP and run Tools > MCP > Start MCP Server.
@@ -257,8 +236,7 @@ def check_server(ctx: Context) -> dict:
         test_conn.connect()
         result = test_conn.send_command("get_gimp_info")
     except Exception as e:
-        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT,
-                "sync_mode": _sync_mode(), "error": str(e)}
+        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
     if result.get("status") != "success":
         # The plugin answered, so it's reachable, but without info there's no version to
         # compare. Report the error rather than a misleading "plugin is outdated" warning.
@@ -266,7 +244,6 @@ def check_server(ctx: Context) -> dict:
             "connected": True,
             "host": GIMP_HOST,
             "port": GIMP_PORT,
-            "sync_mode": _sync_mode(),
             "error": f"get_gimp_info failed: {result.get('error', 'Unknown error')}",
         }
     results = result.get("results", {})
@@ -276,7 +253,6 @@ def check_server(ctx: Context) -> dict:
         "host": GIMP_HOST,
         "port": GIMP_PORT,
         "gimp_version": version,
-        "sync_mode": _sync_mode(),
         **version_status(results.get("mcp_plugin_version")),
     }
 
@@ -293,7 +269,7 @@ def restart_server(ctx: Context) -> dict:
     Returns the new connection status (same format as check_server).
     """
     # Every call opens its own connection, so there's no shared socket to drop.
-    # This runs in a worker thread (see gimp_tool), so the sleep doesn't block the event loop.
+    # This runs on the GIMP worker thread (see gimp_tool), so the sleep doesn't block the event loop.
     time.sleep(0.5)
     return check_server(ctx)
 
