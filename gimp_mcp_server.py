@@ -44,7 +44,7 @@ GIMP_PORT = _port_from_env()
 
 # Must match PLUGIN_VERSION in gimp-mcp-plugin.py and version in pyproject.toml
 # (tests/test_version_handshake.py checks this).
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.2.1"
 
 
 def _parse_version(value):
