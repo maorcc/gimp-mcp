@@ -4419,7 +4419,11 @@ class MCPPlugin(Gimp.PlugIn):
                 cfg.set_property("start-range", 0.0)
                 cfg.set_property("end-range",   1.0)
                 result = proc.run(cfg)
-                # Return values: mean, std-dev, median, pixels, count, percentile
+                # Index 0 holds the PDB status; the return values documented as
+                # mean, std-dev, median, pixels, count, percentile start at 1.
+                if result.index(0) != Gimp.PDBStatusType.SUCCESS:
+                    return {"status": "error", "error": "gimp-drawable-histogram did not succeed"}
+
                 def _safe(idx):
                     try:
                         return result.index(idx)
@@ -4428,11 +4432,11 @@ class MCPPlugin(Gimp.PlugIn):
                 return {
                     "status": "success",
                     "results": {
-                        "mean":    _safe(0),
-                        "std_dev": _safe(1),
-                        "median":  _safe(2),
-                        "pixels":  _safe(3),
-                        "count":   _safe(4),
+                        "mean":    _safe(1),
+                        "std_dev": _safe(2),
+                        "median":  _safe(3),
+                        "pixels":  _safe(4),
+                        "count":   _safe(5),
                     }
                 }
             else:
