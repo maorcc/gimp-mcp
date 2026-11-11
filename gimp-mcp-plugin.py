@@ -19,6 +19,7 @@ import json
 import socket
 import traceback
 import threading
+import time
 import base64
 import tempfile
 import os
@@ -30,9 +31,120 @@ LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
 
+# Reported to the MCP server, which warns when it doesn't match its own version.
+# Keep in sync with SERVER_VERSION in gimp_mcp_server.py and version in pyproject.toml
+# (tests/test_version_handshake.py checks this).
+PLUGIN_VERSION = "0.2.0"
+
+DEFAULT_PORT = 9877
+SETTINGS_FILE_NAME = "gimp-mcp.json"
+DEFAULT_SETTINGS = {"autostart": False, "port": DEFAULT_PORT}
+
 
 def N_(message): return message
 def _(message): return GLib.dgettext(None, message)
+
+
+def _settings_path():
+    """Settings live in GIMP's per-user config dir (e.g. ~/.config/GIMP/3.2)."""
+    return os.path.join(Gimp.directory(), SETTINGS_FILE_NAME)
+
+
+def load_settings():
+    """Read the plug-in settings, falling back to defaults for anything missing or invalid."""
+    settings = dict(DEFAULT_SETTINGS)
+    try:
+        with open(_settings_path(), "r", encoding="utf-8") as f:
+            stored = json.load(f)
+    except FileNotFoundError:
+        return settings
+    except Exception as e:
+        print(f"[MCP] Could not read {_settings_path()}: {e}; using defaults")
+        return settings
+    if not isinstance(stored, dict):
+        print(f"[MCP] {_settings_path()} is not a JSON object; using defaults")
+        return settings
+    if isinstance(stored.get("autostart"), bool):
+        settings["autostart"] = stored["autostart"]
+    port = stored.get("port")
+    if isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535:
+        settings["port"] = port
+    return settings
+
+
+def save_settings(settings):
+    path = _settings_path()
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _exchange(sock, payload, timeout):
+    """Send a JSON request on a connected socket and return the parsed reply.
+
+    Returns None if the listener closes, errors, sends something that is not
+    JSON, or does not finish replying within `timeout` seconds.
+    """
+    try:
+        # One deadline for the whole reply, so a listener that trickles bytes
+        # cannot stretch the exchange past `timeout`.
+        deadline = time.monotonic() + timeout
+        sock.settimeout(timeout)
+        sock.sendall(json.dumps(payload).encode("utf-8"))
+        data = b""
+        while len(data) < 65536:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            sock.settimeout(remaining)
+            chunk = sock.recv(4096)
+            if not chunk:
+                return None
+            data += chunk
+            try:
+                return json.loads(data.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+    except OSError:
+        pass
+    return None
+
+
+def send_request(host, port, payload, timeout):
+    """Connect to host:port, send one JSON request and return the parsed reply.
+
+    Returns None if the connection fails or no valid reply arrives in time.
+    """
+    try:
+        sock = socket.create_connection((host, port), timeout=0.5)
+    except OSError:
+        return None
+    try:
+        return _exchange(sock, payload, timeout)
+    finally:
+        sock.close()
+
+
+def probe_listener(host, port, timeout=2.0):
+    """Identify what is listening on host:port.
+
+    Returns "none" if nothing accepts connections, "mcp" if the listener
+    answers check_server like this plug-in, and "other" for anything else
+    (another program, or a listener that does not reply in time).
+    """
+    try:
+        sock = socket.create_connection((host, port), timeout=0.5)
+    except OSError:
+        return "none"
+    try:
+        reply = _exchange(sock, {"type": "check_server", "params": {}}, timeout)
+    finally:
+        sock.close()
+    results = reply.get("results") if isinstance(reply, dict) else None
+    if isinstance(results, dict) and results.get("running") is True:
+        return "mcp"
+    return "other"
 
 
 def exec_and_get_results(command, context):
@@ -45,8 +157,45 @@ def exec_and_get_results(command, context):
     return output
 
 
+# Gegl stores colour in linear light, so Gegl.Color.get_rgba() returns linear
+# floats; scaling those by 255 yields linear values wearing an sRGB label, and
+# #ff5733 reads back as (255, 24, 8).
+#
+# babl would convert this for us, but Babl.format() cannot be reached safely
+# from here: if babl is not yet initialised it calls babl_fatal() -- "you must
+# call babl_init first" -- which aborts the process at the C level and cannot
+# be caught from Python. GIMP imports this file during its plug-in scan,
+# before that initialisation, so touching babl here makes the whole plug-in
+# vanish from the menu. The sRGB transfer function is exact for 8-bit output
+# anyway: it round-trips all 256 levels and matches babl on every colour
+# tested.
+
+
+def _linear_to_srgb_u8(value):
+    """One linear-light channel (0..1 float) -> 0-255 sRGB byte."""
+    if value <= 0.0:
+        return 0
+    if value <= 0.0031308:
+        encoded = value * 12.92
+    else:
+        encoded = 1.055 * (value ** (1.0 / 2.4)) - 0.055
+    return max(0, min(255, round(encoded * 255)))
+
+
+def srgb_bytes_from_color(color):
+    """Gegl.Color -> (r, g, b, a) as 0-255 sRGB values."""
+    red, green, blue, alpha = color.get_rgba()
+    return (
+        _linear_to_srgb_u8(red),
+        _linear_to_srgb_u8(green),
+        _linear_to_srgb_u8(blue),
+        # Alpha is stored linearly; it takes no transfer function.
+        max(0, min(255, round(alpha * 255))),
+    )
+
+
 class MCPPlugin(Gimp.PlugIn):
-    def __init__(self, host='localhost', port=9877):
+    def __init__(self, host='localhost', port=DEFAULT_PORT):
         super().__init__()
         self.host = host
         self.port = port
@@ -56,6 +205,15 @@ class MCPPlugin(Gimp.PlugIn):
         self.context = {}
         exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
+        # One client thread per connection; a retry after a client-side timeout
+        # would otherwise drive the libgimp wire protocol concurrently and crash
+        self.command_lock = threading.Lock()
+        # A restart_server request asks the accept thread to re-bind the
+        # listening socket, so the socket is only ever replaced by the thread
+        # that calls accept() on it.
+        self._restart_requested = threading.Event()
+        self._restart_done = threading.Event()
+        self._restart_result = None
 
     def do_set_i18n(self, procname):
         # Plugin has no translations; tell GIMP so it stops logging
@@ -63,16 +221,58 @@ class MCPPlugin(Gimp.PlugIn):
         return False
 
     def do_query_procedures(self):
-        """Register the plugin procedures."""
-        return ["plug-in-mcp-server", "plug-in-mcp-check", "plug-in-mcp-restart"]
+        """Register the plugin procedures.
+
+        GIMP sorts plug-in menu items alphabetically by label (registration
+        order is ignored), so the Tools > MCP labels are numbered to keep
+        them in Start, Check, Restart, Settings order.
+        """
+        return ["plug-in-mcp-server", "plug-in-mcp-check", "plug-in-mcp-restart",
+                "plug-in-mcp-settings", "plug-in-mcp-autostart"]
 
     def do_create_procedure(self, name):
         """Define the procedure properties."""
+        if name == "plug-in-mcp-autostart":
+            # GIMP runs every PERSISTENT procedure that takes no arguments once
+            # at startup. It stays hidden (no menu path) and only starts the
+            # server when autostart is enabled in the settings dialog.
+            procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PERSISTENT,
+                                           self._run_autostart, None)
+            procedure.set_documentation(_("Starts the MCP server when GIMP launches, if enabled"),
+                                        _("Run automatically by GIMP at startup. Enable it in "
+                                          "Tools > MCP > MCP Server Settings."),
+                                        name)
+            procedure.set_attribution("Viesar Lab", "Viesar Lab", "2026")
+            return procedure
+
+        if name == "plug-in-mcp-settings":
+            procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self._run_settings, None)
+            procedure.set_menu_label(_("4. MCP Server Settings..."))
+            procedure.set_documentation(_("Configure the MCP server"),
+                                        _("Choose whether the MCP server starts when GIMP launches, "
+                                          "and which port it listens on. Changes apply the next "
+                                          "time the server starts."),
+                                        name)
+            procedure.set_attribution("Viesar Lab", "Viesar Lab", "2026")
+            procedure.add_enum_argument("run-mode", _("Run mode"), _("The run mode"),
+                                        Gimp.RunMode, Gimp.RunMode.INTERACTIVE,
+                                        GObject.ParamFlags.READWRITE)
+            procedure.add_boolean_argument("autostart", _("_Start MCP server when GIMP launches"),
+                                           _("Start the MCP server automatically when GIMP launches"),
+                                           DEFAULT_SETTINGS["autostart"], GObject.ParamFlags.READWRITE)
+            procedure.add_int_argument("port", _("_Port"),
+                                       _("TCP port the MCP server listens on (localhost only). "
+                                         "Set GIMP_MCP_PORT for the MCP client to match."),
+                                       1, 65535, DEFAULT_PORT, GObject.ParamFlags.READWRITE)
+            procedure.add_menu_path('<Image>/Tools/MCP')
+            return procedure
+
         if name == "plug-in-mcp-check":
             procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self._run_check, None)
-            procedure.set_menu_label(_("Check MCP Server"))
+            procedure.set_menu_label(_("2. Check MCP Server"))
             procedure.set_documentation(_("Check whether the MCP server is running"),
-                                        _("Prints MCP server status to the GIMP console"),
+                                        _("Reports whether an MCP server is listening on the "
+                                          "port saved in MCP Server Settings"),
                                         name)
             procedure.set_attribution("Viesar Lab", "Viesar Lab", "2026")
             procedure.add_enum_argument("run-mode", _("Run mode"), _("The run mode"),
@@ -83,9 +283,10 @@ class MCPPlugin(Gimp.PlugIn):
 
         if name == "plug-in-mcp-restart":
             procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self._run_restart, None)
-            procedure.set_menu_label(_("Restart MCP Server"))
+            procedure.set_menu_label(_("3. Restart MCP Server"))
             procedure.set_documentation(_("Restart the MCP server socket"),
-                                        _("Drops and re-binds the MCP server socket on port 9877"),
+                                        _("Asks the running MCP server to drop and re-bind its "
+                                          "listening socket"),
                                         name)
             procedure.set_attribution("Viesar Lab", "Viesar Lab", "2026")
             procedure.add_enum_argument("run-mode", _("Run mode"), _("The run mode"),
@@ -96,7 +297,7 @@ class MCPPlugin(Gimp.PlugIn):
 
         # Default: plug-in-mcp-server
         procedure = Gimp.Procedure.new(self, name, Gimp.PDBProcType.PLUGIN, self.run, None)
-        procedure.set_menu_label(_("Start MCP Server"))
+        procedure.set_menu_label(_("1. Start MCP Server"))
         procedure.set_documentation(_("Starts an MCP server to control GIMP externally"),
                                     _("Starts an MCP server to control GIMP externally"),
                                     name)
@@ -107,17 +308,45 @@ class MCPPlugin(Gimp.PlugIn):
         procedure.add_menu_path('<Image>/Tools/MCP')
         return procedure
 
+    @staticmethod
+    def _report(config, message):
+        """Print a menu-action result, and show it in GIMP when run interactively."""
+        print(f"[MCP] {message}")
+        if config.get_property("run-mode") == Gimp.RunMode.INTERACTIVE:
+            Gimp.message(message)
+
+    # Each menu click runs in a fresh plug-in process, separate from the one
+    # running the server (autostart or Start), so the menu actions below talk
+    # to the server over its socket instead of reading self.running.
+
     def _run_check(self, procedure, config, run_data):
-        """Menu action: print server status."""
-        status = "RUNNING" if self.running else "STOPPED"
-        print(f"[MCP] Server status: {status} on port {self.port}")
+        """Menu action: report whether the MCP server is listening."""
+        port = load_settings()["port"]
+        listener = probe_listener(self.host, port)
+        status = {"mcp": "RUNNING", "none": "STOPPED"}.get(listener, "PORT IN USE by another program")
+        self._report(config, f"Server status: {status} on {self.host}:{port}")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
     def _run_restart(self, procedure, config, run_data):
-        """Menu action: restart the server socket."""
-        result = self._restart_server()
-        print(f"[MCP] Restart result: {result}")
-        return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+        """Menu action: ask the running MCP server to re-bind its socket."""
+        port = load_settings()["port"]
+        listener = probe_listener(self.host, port)
+        if listener == "mcp":
+            reply = send_request(self.host, port, {"type": "restart_server", "params": {}},
+                                 DEFAULT_TIMEOUT_SECONDS)
+            if isinstance(reply, dict) and reply.get("status") == "success":
+                self._report(config, f"MCP server restarted on {self.host}:{port}")
+                return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+            error = reply.get("error") if isinstance(reply, dict) else None
+            message = f"Could not restart the MCP server on {self.host}:{port}: {error or 'no reply'}"
+        elif listener == "none":
+            message = (f"No MCP server is running on {self.host}:{port}. "
+                       f"Start it with Tools > MCP > Start MCP Server.")
+        else:
+            message = (f"Port {port} on {self.host} is in use by another program, not the MCP "
+                       f"server. Choose a different port in Tools > MCP > MCP Server Settings.")
+        self._report(config, message)
+        return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error(message))
 
     def shutdown_server(self, signum=None, frame=None):
         """Gracefully shutdown the server."""
@@ -132,18 +361,14 @@ class MCPPlugin(Gimp.PlugIn):
             self._glib_loop.quit()
 
     def _start_server_thread(self):
-        """Core server loop — runs in a background thread."""
-        self.running = True
+        """Accept loop — runs in a background thread on the socket bound by _serve_forever."""
         try:
-            print("Creating socket...")
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.settimeout(1.0)
-            self.socket.bind((self.host, self.port))
-            self.socket.listen(1)
-            print(f"GimpMCP server started on {self.host}:{self.port}")
-
             while self.running:
+                if self._restart_requested.is_set():
+                    self._rebind()
+                    if not self.running:
+                        break
+                    continue
                 try:
                     client, address = self.socket.accept()
                     print(f"Connected to client: {address}")
@@ -167,11 +392,31 @@ class MCPPlugin(Gimp.PlugIn):
             print(f"Error in MCP server thread: {str(e)}")
             self.running = False
 
-    def run(self, procedure, config, run_data):
-        """Menu handler: start the server."""
-        if self.running:
-            print("MCP Server is already running")
-            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+    def _serve_forever(self):
+        """Bind the server socket, then block in the GLib main loop.
+
+        Returns None once the server has run and stopped, or an
+        (already_running, message) tuple if it could not start.
+        """
+        # Each menu click runs in a fresh plug-in process, so self.running
+        # cannot tell whether the autostarted server (another process) is up.
+        listener = probe_listener(self.host, self.port)
+        if listener == "mcp":
+            return (True, f"MCP server is already running on {self.host}:{self.port}")
+        if listener == "other":
+            return (False, f"Could not start MCP server: port {self.port} on {self.host} is in use "
+                           f"by another program. Choose a different port in "
+                           f"Tools > MCP > MCP Server Settings.")
+
+        # Bind in the calling thread so a failure is reported instead of
+        # leaving the process idling in the main loop with no server.
+        print("Creating socket...")
+        try:
+            self.socket = self._bind_listener()
+        except OSError as e:
+            return (False, f"Could not start MCP server on {self.host}:{self.port}: {e}")
+        self.running = True
+        print(f"GimpMCP server started on {self.host}:{self.port}")
 
         signal.signal(signal.SIGTERM, self.shutdown_server)
         signal.signal(signal.SIGINT, self.shutdown_server)
@@ -184,8 +429,133 @@ class MCPPlugin(Gimp.PlugIn):
         # (all Gimp.* calls go over the wire protocol which needs GLib to dispatch)
         self._glib_loop = GLib.MainLoop()
         self._glib_loop.run()
+        return None
 
+    def run(self, procedure, config, run_data):
+        """Menu handler: start the server."""
+        if self.running:
+            print("MCP Server is already running")
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        self.port = load_settings()["port"]
+        failure = self._serve_forever()
+        if failure:
+            already_running, message = failure
+            print(f"[MCP] {message}")
+            Gimp.message(message)
+            if not already_running:
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR,
+                                                   GLib.Error(message))
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+    def _run_autostart(self, procedure, config, run_data):
+        """Run by GIMP at launch: start the server if autostart is enabled."""
+        # GIMP holds its startup until a persistent procedure reports ready.
+        # persistent_enable() is deliberately not called: it would make the
+        # main loop read GIMP's wire channel and race the client threads for
+        # their PDB replies.
+        procedure.persistent_ready()
+
+        settings = load_settings()
+        if not settings["autostart"]:
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+        self.port = settings["port"]
+        failure = self._serve_forever()
+        if failure:
+            already_running, message = failure
+            print(f"[MCP] Autostart: {message}")
+            if not already_running:
+                Gimp.message(message)
+        return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+    def _show_settings_dialog(self, settings):
+        """Show the settings dialog; return the new settings, or None if cancelled.
+
+        A plain GimpUi.Dialog rather than GimpUi.ProcedureDialog: the latter
+        also shows the run-mode argument and GIMP's own Load/Save Settings
+        preset buttons, which are separate from gimp-mcp.json and confusing.
+        """
+        gi.require_version('GimpUi', '3.0')
+        gi.require_version('Gtk', '3.0')
+        from gi.repository import GimpUi, Gtk
+        GimpUi.init("plug-in-mcp-settings")
+
+        use_header_bar = Gtk.Settings.get_default().get_property("gtk-dialogs-use-header")
+        dialog = GimpUi.Dialog(use_header_bar=use_header_bar, title=_("MCP Server Settings"),
+                               role="plug-in-mcp-settings")
+        dialog.add_button(_("_Cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(_("_OK"), Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_border_width(12)
+        dialog.get_content_area().pack_start(box, True, True, 0)
+
+        autostart = Gtk.CheckButton.new_with_mnemonic(_("_Start MCP server when GIMP launches"))
+        autostart.set_active(settings["autostart"])
+        box.pack_start(autostart, False, False, 0)
+
+        port_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        port_label = Gtk.Label.new_with_mnemonic(_("_Port:"))
+        port = Gtk.SpinButton.new_with_range(1, 65535, 1)
+        port.set_value(settings["port"])
+        port.set_activates_default(True)
+        port_label.set_mnemonic_widget(port)
+        port_row.pack_start(port_label, False, False, 0)
+        port_row.pack_start(port, False, False, 0)
+        box.pack_start(port_row, False, False, 0)
+
+        note = Gtk.Label(label=_("Changes apply the next time the MCP server starts.\n"
+                                 "If you change the port, set GIMP_MCP_PORT to the same\n"
+                                 "value in your MCP client config."))
+        note.set_xalign(0.0)
+        note.get_style_context().add_class("dim-label")
+        box.pack_start(note, False, False, 0)
+
+        dialog.show_all()
+        response = dialog.run()
+        port.update()  # commit a value typed without leaving the field
+        result = {"autostart": autostart.get_active(), "port": port.get_value_as_int()}
+        dialog.destroy()
+        return result if response == Gtk.ResponseType.OK else None
+
+    def _run_settings(self, procedure, config, run_data):
+        """Menu action: edit autostart and port, saved to gimp-mcp.json."""
+        if config.get_property("run-mode") == Gimp.RunMode.INTERACTIVE:
+            new_settings = self._show_settings_dialog(load_settings())
+            if new_settings is None:
+                return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+        else:
+            new_settings = {
+                "autostart": bool(config.get_property("autostart")),
+                "port": int(config.get_property("port")),
+            }
+        try:
+            save_settings(new_settings)
+        except OSError as e:
+            message = f"Could not save MCP settings to {_settings_path()}: {e}"
+            print(f"[MCP] {message}")
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error(message))
+
+        message = (f"MCP settings saved: autostart {'on' if new_settings['autostart'] else 'off'}, "
+                   f"port {new_settings['port']}. Takes effect the next time the MCP server starts "
+                   f"(restart GIMP for autostart).")
+        if new_settings["port"] != DEFAULT_PORT:
+            message += (f" Set GIMP_MCP_PORT={new_settings['port']} in your MCP client config "
+                        f"so it connects to the same port.")
+        print(f"[MCP] {message}")
+        if config.get_property("run-mode") == Gimp.RunMode.INTERACTIVE:
+            Gimp.message(message)
+        return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+    @staticmethod
+    def _is_check_server(request):
+        try:
+            j = json.loads(request)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(j, dict) and j.get("type") == "check_server"
 
     def _handle_client(self, client):
         """Handle connected client"""
@@ -226,7 +596,14 @@ class MCPPlugin(Gimp.PlugIn):
             request = str(buffer)
         
         # print(f"Parsed request: {request}")
-        response = self.execute_command(request)
+        if self._is_check_server(request):
+            # check_server is handled only here, without the lock (it makes no
+            # GIMP calls), so a probe from another plug-in process gets a reply
+            # even mid-command.
+            response = {"status": "success", "results": {"running": True, "port": self.port}}
+        else:
+            with self.command_lock:
+                response = self.execute_command(request)
         print(f"response type: {type(response)}")
         
         if isinstance(response, dict):
@@ -247,7 +624,7 @@ class MCPPlugin(Gimp.PlugIn):
         return
 
     def execute_command(self, request):
-        """Execute commands in GIMP's main thread."""
+        """Run one command. Called from client threads; command_lock keeps commands from overlapping."""
         try:
             if request == "disable_auto_disconnect":
                 self.auto_disconnect_client = False
@@ -262,8 +639,6 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._get_gimp_info()
             elif "type" in j and j["type"] == "get_context_state":
                 return self._get_context_state()
-            elif "type" in j and j["type"] == "check_server":
-                return {"status": "success", "results": {"running": True, "port": self.port}}
             elif "type" in j and j["type"] == "restart_server":
                 return self._restart_server()
             elif "type" in j and j["type"] == "new_canvas":
@@ -1021,8 +1396,8 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             print("Getting GIMP environment information...")
             
-            gimp_info = {}
-            
+            gimp_info = {"mcp_plugin_version": PLUGIN_VERSION}
+
             # Basic GIMP version and build information
             try:
                 version_info = {}
@@ -1398,37 +1773,67 @@ class MCPPlugin(Gimp.PlugIn):
                 "traceback": traceback.format_exc()
             }
 
-    def _restart_server(self):
-        """Gracefully restart the MCP socket server in-place."""
+    def _bind_listener(self):
+        """Create, bind and listen on the server socket. Raises OSError on failure."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            print("Restarting MCP server socket...")
-            # Close existing socket to force reconnect on next client call
-            if self.socket:
-                try:
-                    self.socket.close()
-                except Exception:
-                    pass
-                self.socket = None
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.settimeout(1.0)
+            sock.bind((self.host, self.port))
+            sock.listen(1)
+        except OSError:
+            sock.close()
+            raise
+        return sock
 
-            # Re-bind a fresh socket
-            import time
-            time.sleep(0.3)
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.settimeout(1.0)
-            self.socket.bind((self.host, self.port))
-            self.socket.listen(1)
+    def _rebind(self):
+        """Replace the listening socket. Runs only on the accept thread.
+
+        Clients already connected keep their own sockets. If the port can't
+        be bound again the server stops, and the main loop is quit so the
+        plug-in process exits instead of idling without a server.
+        """
+        print("Restarting MCP server socket...")
+        if self.socket:
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+            self.socket = None
+        try:
+            self.socket = self._bind_listener()
             print(f"MCP server restarted on {self.host}:{self.port}")
-            return {
+            self._restart_result = {
                 "status": "success",
                 "results": {"restarted": True, "host": self.host, "port": self.port}
             }
-        except Exception as e:
-            return {
+        except OSError as e:
+            print(f"MCP server restart failed, server stopped: {e}")
+            self.running = False
+            self._restart_result = {
                 "status": "error",
-                "error": f"Restart failed: {str(e)}",
-                "traceback": traceback.format_exc()
+                "error": f"Restart failed, the MCP server has stopped: {e}"
             }
+            if getattr(self, "_glib_loop", None):
+                self._glib_loop.quit()
+        self._restart_requested.clear()
+        self._restart_done.set()
+
+    def _restart_server(self):
+        """Re-bind the listening socket of the server running in this process.
+
+        The accept thread does the re-bind (see _rebind) so the socket is never
+        replaced under a running accept(). Called from a client thread.
+        """
+        if not self.running or self.socket is None:
+            return {"status": "error", "error": "The MCP server is not running in this process"}
+        self._restart_done.clear()
+        self._restart_requested.set()
+        # The accept loop checks for a restart at least once a second
+        # (the listening socket's accept timeout).
+        if not self._restart_done.wait(timeout=5.0):
+            return {"status": "error", "error": "Restart timed out waiting for the server thread"}
+        return self._restart_result
 
     def _new_canvas(self, params):
         """Create a new blank canvas and open it in a GIMP display window."""
@@ -1470,8 +1875,7 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_background(bg_color)
                 Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
 
-            Gimp.Display.new(image)
-            Gimp.displays_flush()
+            display_opened = self._create_display(image)
 
             print(f"New canvas created: {width}x{height} {color_mode} fill={fill}")
             return {
@@ -1483,7 +1887,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "color_mode": color_mode,
                     "fill": fill,
                     "resolution": resolution,
-                    "display_opened": True
+                    "display_opened": display_opened
                 }
             }
         except Exception as e:
@@ -1497,6 +1901,26 @@ class MCPPlugin(Gimp.PlugIn):
     # =========================================================================
     # SHARED HELPERS
     # =========================================================================
+
+    def _create_display(self, image):
+        """Open a display for image; return True if one was created.
+
+        Headless runs (gimp -i) have no display backend: Gimp.Display.new()
+        raises "constructor returned NULL" there even though the image itself
+        is fine, so a failure here must not fail the calling operation.
+        """
+        try:
+            Gimp.Display.new(image)
+        except Exception as display_err:
+            print(f"[MCP] Display creation skipped (headless?): {display_err}")
+            return False
+        # The display exists at this point; a failed refresh must not make the
+        # caller report that no display was opened.
+        try:
+            Gimp.displays_flush()
+        except Exception as flush_err:
+            print(f"[MCP] displays_flush failed after opening display: {flush_err}")
+        return True
 
     def _get_image(self, image_index):
         """Return the image at image_index from Gimp.get_images(), raise if none open."""
@@ -1658,8 +2082,7 @@ class MCPPlugin(Gimp.PlugIn):
             image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gio_file)
             if image is None:
                 return {"status": "error", "error": f"Could not open file: {file_path}"}
-            display = Gimp.Display.new(image)
-            Gimp.displays_flush()
+            display_opened = self._create_display(image)
             base_type = image.get_base_type()
             mode_map = {
                 Gimp.ImageBaseType.RGB:     "RGB",
@@ -1674,7 +2097,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "height":        image.get_height(),
                     "color_mode":    mode_map.get(base_type, str(base_type)),
                     "num_layers":    len(image.get_layers()),
-                    "display_opened": display is not None,
+                    "display_opened": display_opened,
                 }
             }
         except Exception as e:
@@ -1782,7 +2205,7 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-levels-stretch")
+                proc = pdb.lookup_procedure("gimp-drawable-levels-stretch")
                 if proc:
                     cfg = proc.create_config()
                     cfg.set_property("drawable", drawable)
@@ -1881,16 +2304,22 @@ class MCPPlugin(Gimp.PlugIn):
             contrast    = float(params.get("contrast", 0))
             image    = self._get_image(image_index)
             drawable = self._resolve_layer(image, layer_name, None)
+            # gimp-drawable-brightness-contrast works in linear light on GIMP 3,
+            # so even +8/+12 crushes everything below ~56/255 to black. Apply the
+            # same formula as a perceptual-space LUT through curves instead.
+            import math
+            b = max(-1.0, min(1.0, brightness / 127.0)) / 2.0
+            slant = math.tan((max(-1.0, min(1.0, contrast / 127.0)) + 1.0) * math.pi / 4.0)
+            lut = []
+            for i in range(256):
+                v = i / 255.0
+                v = v * (1.0 + b) if b < 0.0 else v + (1.0 - v) * b
+                v = (v - 0.5) * slant + 0.5
+                lut.append(min(1.0, max(0.0, v)))
             image.undo_group_start()
             try:
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-brightness-contrast")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable", drawable)
-                    cfg.set_property("brightness", brightness / 127.0)
-                    cfg.set_property("contrast",   contrast   / 127.0)
-                    proc.run(cfg)
+                if not drawable.curves_explicit(Gimp.HistogramChannel.VALUE, lut):
+                    raise Exception("gimp-drawable-curves-explicit failed")
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3174,7 +3603,7 @@ class MCPPlugin(Gimp.PlugIn):
                         cfg = proc.create_config()
                         cfg.set_property("layer",     layer)
                         cfg.set_property("font-size", float(new_size))
-                        cfg.set_property("unit",      Gimp.Unit.PIXEL)
+                        cfg.set_property("unit",      Gimp.Unit.pixel())
                         proc.run(cfg)
                 if new_color is not None:
                     proc = pdb.lookup_procedure("gimp-text-layer-set-color")
@@ -3946,8 +4375,7 @@ class MCPPlugin(Gimp.PlugIn):
             pixel    = drawable.get_pixel(x, y)
             # GIMP 3.2: get_pixel returns a Gegl.Color object
             if hasattr(pixel, 'get_rgba'):
-                rf, gf, bf, af = pixel.get_rgba()
-                r, g, b, a = int(rf*255), int(gf*255), int(bf*255), int(af*255)
+                r, g, b, a = srgb_bytes_from_color(pixel)
             else:
                 # Fallback: old tuple format (num_channels, bytes_array)
                 channels = list(pixel[1]) if hasattr(pixel[1], '__iter__') else []

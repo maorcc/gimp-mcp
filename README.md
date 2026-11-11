@@ -10,7 +10,7 @@
 
 ![GIMP MCP in action — AI agent driving GIMP through natural language](docs/mcpInAction.gif)
 
-Full demo (with audio): https://github.com/maorcc/gimp-mcp/raw/main/docs/demo.mp4
+Full demo (with audio): https://github.com/gimp-mcp/gimp-mcp/raw/main/docs/demo.mp4
 
 *AI agent using GIMP MCP to remove a background, edit a character's expression, and verify results — all through natural language via Claude*
 
@@ -24,7 +24,7 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 
 - The AI can *see* the image at any point in the workflow without saving to disk (`get_state_snapshot`)
 - Supports fully autonomous multi-step pipelines: open → edit → verify → refine → export
-- 56 dedicated tool commands covering every major GIMP operation
+- 79 dedicated tool commands covering every major GIMP operation
 - Fully compatible with GIMP 3.2.x (all breaking API changes resolved)
 
 ## Key Features
@@ -32,8 +32,8 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 | | |
 |---|---|
 | 👁️ **Live Visual Feedback** | `get_state_snapshot` returns a PNG preview mid-workflow so the AI verifies each step |
-| 🎨 **56 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
-| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (56/56 passing) |
+| 🎨 **79 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
+| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (59/59 passing) |
 | 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
 | 🖼️ **Region Snapshots** | Zoom into any area for detail verification (face, mouth, corner, etc.) |
 | 🔌 **Universal MCP** | Works with Claude Desktop, Claude Code, Gemini CLI, PydanticAI, and more |
@@ -73,68 +73,63 @@ The AI removes the background, takes a snapshot to inspect the result, detects r
 ## Prerequisites
 
 - **GIMP 3.2+** — tested on GIMP 3.2.2 (Windows, macOS, Linux)
-- **Python 3.8+** — for the MCP server
-- **uv** — Python package manager (`pip install uv`)
+- **uv** — Python package manager ([install uv](https://docs.astral.sh/uv/getting-started/installation/)); `uvx` downloads the MCP server and a suitable Python (3.11+) on first use
 - **MCP-compatible AI client** — Claude Desktop, Claude Code, Gemini CLI, PydanticAI, etc.
 
 ---
 
 ## Quick Start
 
-### 1. Install Dependencies
+The MCP server and the GIMP plugin ship together as the [`gimp-mcp-plugin`](https://pypi.org/project/gimp-mcp-plugin/) package on PyPI. No clone needed.
+
+### 1. Install the GIMP Plugin
+
+Launch GIMP once (so its config folder exists), close it, then run:
 
 ```bash
-git clone https://github.com/maorcc/gimp-mcp.git
-cd gimp-mcp
-uv sync
+uvx gimp-mcp-plugin@latest install-plugin
 ```
 
-### 2. Install the GIMP Plugin
+This copies the plugin into the newest GIMP 3.x config folder it finds (Linux standard, Snap and Flatpak locations, macOS, Windows) and makes it executable. Restart GIMP afterward.
 
-Copy `gimp-mcp-plugin.py` to GIMP's plug-ins directory and restart GIMP.
+- `--dry-run` shows where it would install without writing anything.
+- `--gimp-dir DIR` installs into a specific GIMP config folder, e.g. `--gimp-dir ~/.config/GIMP/3.2`.
 
-> **Which directory?** GIMP names its per-user folder after its **major.minor** version
-> (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
-> *moves* when you upgrade GIMP (e.g. `3.0` → `3.2`). The snippet below auto-selects the
-> newest one, so it keeps working across upgrades. To check the path manually, open GIMP
-> and look at **Edit → Preferences → Folders → Plug-ins**.
->
-> Launch GIMP at least once before running this, so its config folder exists.
+If you have more than one GIMP 3 installation (e.g. a system GIMP and a Flatpak), the newest folder found may not be the one your GIMP uses. Check the folder shown in GIMP's **Edit → Preferences → Folders → Plug-ins** and pass the folder that contains `plug-ins` with `--gimp-dir`.
 
-**macOS / Linux:**
-```bash
-# Pick the base directory for your platform:
-BASE="$HOME/Library/Application Support/GIMP"     # macOS
-# BASE="$HOME/.config/GIMP"                        # Linux (standard)
-# BASE="$HOME/snap/gimp/current/.config/GIMP"      # Linux (Snap)
+> **Which folder does GIMP use?** GIMP names its per-user folder after its **major.minor**
+> version (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the
+> plug-ins folder *moves* when you upgrade GIMP. Re-run `install-plugin` after upgrading.
+> To check the active path, open **Edit → Preferences → Folders → Plug-ins** in GIMP.
 
-# Auto-select the newest GIMP 3.x config directory (3.0, 3.2, 3.4, ...):
-GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
-if [ -z "$GIMP_DIR" ]; then
-  echo "No GIMP 3.x config dir found under $BASE — launch GIMP once, then re-run." >&2
-  exit 1
-fi
-mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
-chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
-echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
-```
-
-**Windows:**
-```text
-%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
-```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Just copy and restart GIMP.
-
-> For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
-
-### 3. Start the MCP Server in GIMP
+### 2. Start the MCP Server in GIMP
 
 1. Open any image in GIMP
 2. Go to **Tools > MCP > Start MCP Server**
 3. Server starts on `localhost:9877`
 
-### 4. Configure Your MCP Client
+#### Start automatically when GIMP launches
+
+To skip step 2 on every launch, open **Tools > MCP > MCP Server Settings...**, tick
+**Start MCP server when GIMP launches**, and restart GIMP. Autostart is off by default.
+
+The same dialog sets the **port** (default `9877`). If you change it, set `GIMP_MCP_PORT`
+in your MCP client config so the MCP server connects to the same port:
+
+```json
+"gimp": {
+  "command": "uvx",
+  "args": ["gimp-mcp-plugin@latest"],
+  "env": { "GIMP_MCP_PORT": "9988" }
+}
+```
+
+Settings are saved to `gimp-mcp.json` in GIMP's per-user config folder (e.g.
+`~/.config/GIMP/3.2/gimp-mcp.json`). Port changes apply the next time the server starts.
+
+### 3. Configure Your MCP Client
+
+`gimp-mcp-plugin@latest` makes `uvx` check PyPI for a new release each time your client starts the server.
 
 #### Claude Desktop
 `~/.config/Claude/claude_desktop_config.json` (Linux/macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
@@ -143,8 +138,8 @@ Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on 
 {
   "mcpServers": {
     "gimp": {
-      "command": "uv",
-      "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+      "command": "uvx",
+      "args": ["gimp-mcp-plugin@latest"]
     }
   }
 }
@@ -152,13 +147,7 @@ Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on 
 
 #### Claude Code
 ```bash
-cd /path/to/gimp-mcp
-claude  # .mcp.json is auto-detected
-```
-
-Or manually:
-```bash
-claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
+claude mcp add gimp-mcp -- uvx gimp-mcp-plugin@latest
 ```
 
 #### Gemini CLI
@@ -167,8 +156,8 @@ claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_se
 {
   "mcpServers": {
     "gimp": {
-      "command": "uv",
-      "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+      "command": "uvx",
+      "args": ["gimp-mcp-plugin@latest"]
     }
   }
 }
@@ -179,9 +168,38 @@ claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_se
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPServerStdio
 
-server = MCPServerStdio('uv', args=['run', '--directory', '/path/to/gimp-mcp', 'gimp_mcp_server.py'])
+server = MCPServerStdio('uvx', args=['gimp-mcp-plugin@latest'])
 agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ```
+
+### Updating
+
+The plugin and the MCP server must be the same version. `check_server` and `get_gimp_info` report a mismatch and print the command that fixes it. To update both:
+
+1. Restart your MCP client. With `@latest`, it picks up the newest server.
+2. Run `uvx gimp-mcp-plugin@latest install-plugin` and restart GIMP.
+
+### Running from a Git Checkout (contributors)
+
+To work on the code, run the server and install the plugin from a clone instead:
+
+```bash
+git clone https://github.com/gimp-mcp/gimp-mcp.git
+cd gimp-mcp
+uv sync
+uv run gimp_mcp_server.py install-plugin    # installs this checkout's plugin
+```
+
+Then point your MCP client at the checkout, e.g. for Claude Desktop:
+
+```json
+"gimp": {
+  "command": "uv",
+  "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+}
+```
+
+Claude Code picks up the repo's `.mcp.json` automatically when started in the checkout. After `git pull`, re-run `install-plugin` if the plugin changed.
 
 ---
 
@@ -219,6 +237,7 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | `auto_levels` | Auto-stretch levels |
 | `desaturate` | Convert to grayscale (keep RGB mode) |
 | `invert_colors` | Invert all channels |
+| `convert_color_mode` | Convert between RGB, grayscale, and indexed modes |
 | `sharpen` | Unsharp mask sharpening |
 | `blur` | Gaussian blur |
 | `denoise` | Noise reduction |
@@ -229,9 +248,11 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | `scale_image` | Scale to exact dimensions |
 | `scale_to_fit` | Scale within bounding box (aspect-safe) |
 | `crop_to_rect` | Crop to rectangle |
+| `crop_to_selection` | Crop canvas to the current selection bounds |
 | `rotate_image` | Rotate 90/180/270 or arbitrary angle |
 | `flip_image` | Flip horizontal or vertical |
 | `resize_canvas` | Resize canvas without scaling content |
+| `warp_region` | Warp / liquify a region by pushing pixels in a direction |
 
 ### ✂️ Selections
 | Tool | Description |
@@ -291,9 +312,27 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 |---|---|
 | `open_image` | Open image file |
 | `export_image` | Export to PNG, JPEG, BMP, TIFF |
+| `save_xcf` | Save as GIMP XCF (preserves layers and metadata) |
 | `new_canvas` | Create blank canvas |
 | `close_image` | Close image |
 | `list_images` | List open images |
+| `set_active_image` | Bring a specific open image to the front |
+
+### 📦 Batch & Multi-Format Export
+| Tool | Description |
+|---|---|
+| `batch_export` | Export all open images (or one) to a directory |
+| `batch_resize` | Resize all open images to a common size |
+| `export_web_optimized` | Export as JPEG and PNG, keeping the smaller |
+| `export_icon_sizes` | Export a full Android or iOS icon set |
+| `export_social_media_kit` | Export resized versions for social media platforms |
+| `export_sprite_sheet` | Combine frames into a sprite sheet PNG |
+
+### ↩️ History
+| Tool | Description |
+|---|---|
+| `undo` | Undo one or more operations on an image |
+| `redo` | Redo previously undone operations |
 
 ### 🔍 Info & Context
 | Tool | Description |
@@ -304,6 +343,13 @@ Lower-level bitmap fetch with region extraction and scaling. Returns base64-enco
 | `get_pixel_color` | Color value at a specific pixel |
 | `get_histogram` | Histogram data for a channel |
 | `get_selection_bounds` | Current selection bounds |
+
+### 🔌 Connection & Raw API
+| Tool | Description |
+|---|---|
+| `check_server` | Check the GIMP plugin socket is reachable and that the plugin version matches the server |
+| `restart_server` | Drop and re-establish the connection to the plugin |
+| `call_api` | Run arbitrary Python-Fu code inside GIMP (escape hatch for anything not covered above) |
 
 ---
 
@@ -350,15 +396,17 @@ See [`bg_remove_iterative.py`](bg_remove_iterative.py) for a complete example. T
 
 | Script | Description |
 |---|---|
-| [`run_tests.py`](run_tests.py) | 56-test suite — run against your GIMP to verify all tools work |
+| [`run_tests.py`](run_tests.py) | 59-test suite — run against your GIMP to verify all tools work |
 | [`bg_remove_iterative.py`](bg_remove_iterative.py) | Iterative BG removal with snapshot checkpoints |
 | [`bg_remove.py`](bg_remove.py) | Simple single-pass background removal |
 | [`agent_edit_demo.py`](agent_edit_demo.py) | Full pipeline: open → remove BG → edit expression → export |
+| [`tests/test_add_text_metadata.py`](tests/test_add_text_metadata.py) | Regression test: `add_text` returns real layer metadata |
+| [`tests/continuous_edit_test/continuous_edit_test.py`](tests/continuous_edit_test/continuous_edit_test.py) | End-to-end agent editing loop: BG removal, selective recolor, composite |
 
 Run the test suite to verify your setup:
 ```bash
 python run_tests.py
-# Expected: 56/56 PASSED
+# Expected: 59/59 PASSED
 ```
 
 ---
@@ -403,13 +451,14 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 
 ### "Could not connect to GIMP"
 - GIMP must be running with an image open
-- Start the MCP server: **Tools > Start MCP Server**
-- Check port 9877 is not blocked by firewall
+- Start the MCP server: **Tools > MCP > Start MCP Server**, or enable autostart in **Tools > MCP > MCP Server Settings...**
+- If you changed the port in GIMP, set `GIMP_MCP_PORT` to the same value in your MCP client config
+- Check port 9877 (or your custom port) is not blocked by firewall
 
 ### Plugin Not Visible in GIMP
 - Look under **Tools > MCP** (the plugin adds an `MCP` submenu, not a top-level `Tools` entry)
-- Confirm the plugin file is in the correct directory (see install steps above)
-- **Upgraded GIMP recently?** A minor upgrade (e.g. 3.0 → 3.2) moves the per-user config folder to a new version directory; reinstall the plugin into the new version's `plug-ins` folder. Verify the active path via **Edit > Preferences > Folders > Plug-ins**.
+- Confirm the plugin file is in the correct directory: `uvx gimp-mcp-plugin@latest install-plugin --dry-run` shows where it goes
+- **Upgraded GIMP recently?** A minor upgrade (e.g. 3.0 → 3.2) moves the per-user config folder to a new version directory; re-run `uvx gimp-mcp-plugin@latest install-plugin` (use `--dry-run` to see which folder it picks). Verify the active path via **Edit > Preferences > Folders > Plug-ins**.
 - On Linux/macOS: ensure the file has execute permission (`chmod +x`)
 - Restart GIMP after installation
 - Check **Filters > Script-Fu > Console** for error messages
@@ -420,11 +469,6 @@ Run the test suite and check the failure list:
 python run_tests.py
 ```
 Each failure includes the tool name and error — most issues on GIMP 3.2 are covered by the fixes above.
-
-### Debug Mode
-```bash
-GIMP_MCP_DEBUG=1 uv run --directory /path/to/gimp-mcp gimp_mcp_server.py
-```
 
 ---
 
@@ -439,7 +483,6 @@ GIMP_MCP_DEBUG=1 uv run --directory /path/to/gimp-mcp gimp_mcp_server.py
 ## Future Enhancements
 
 - **📚 Recipe Collection**: Reusable workflow templates (portrait cleanup, product photo, etc.)
-- **↩️ Undo System**: History management and rollback via MCP
 - **🚀 Dynamic Discovery**: Auto-generate MCP tools from GIMP's full PDB procedure database
 - **🔒 Security**: Sandboxed execution for untrusted command inputs
 - **⚡ Performance**: Optimized bitmap transfer for large images
@@ -467,3 +510,7 @@ To bump the pinned hook versions later:
 ```bash
 uv run pre-commit autoupdate
 ```
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).

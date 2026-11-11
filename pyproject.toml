@@ -3,23 +3,36 @@ requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gimp-mcp"
-version = "0.1.0"
+name = "gimp-mcp-plugin"
+version = "0.2.0"
 description = "GIMP MCP integration for external control of GIMP 3.2"
 readme = "README.md"
-license = "MIT"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp",
-    "fastmcp",
+    "mcp>=1.28.1,<2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/gimp-mcp/gimp-mcp"
+Issues = "https://github.com/gimp-mcp/gimp-mcp/issues"
+
 [project.scripts]
+# `uvx gimp-mcp-plugin` runs the script named after the package.
+gimp-mcp-plugin = "gimp_mcp_server:main"
 gimp-mcp-server = "gimp_mcp_server:main"
 
 [tool.setuptools]
-py-modules = ["gimp_mcp_server"]
+# gimp-mcp-plugin.py is shipped too, for `gimp-mcp-plugin install-plugin` (it imports gi,
+# which only exists inside GIMP, so it is never imported from the package).
+py-modules = ["gimp_mcp_server", "gimp-mcp-plugin"]
+# Ship docs/*.md (read by the MCP prompts) as the gimp_mcp_docs package, without moving them.
+packages = ["gimp_mcp_docs"]
+package-dir = { gimp_mcp_docs = "docs" }
+
+[tool.setuptools.package-data]
+gimp_mcp_docs = ["*.md"]
 
 [tool.ruff.lint.per-file-ignores]
 "gimp-mcp-plugin.py" = ["E402"]

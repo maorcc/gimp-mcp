@@ -3,19 +3,93 @@
 # Adds: new_canvas, check_server, restart_server, no bitmap size restrictions
 
 from mcp.server.fastmcp import FastMCP, Context, Image
+import argparse
+import os
+import re
+import shutil
+import sys
 import socket
+import tempfile
 import json
 import logging
 import base64
 import traceback
 import time
 from pathlib import Path
+from importlib import resources
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
 
 GIMP_HOST = 'localhost'
-GIMP_PORT = 9877
+DEFAULT_GIMP_PORT = 9877
+
+
+def _port_from_env():
+    """GIMP_MCP_PORT must match the port set in GIMP's Tools > MCP > MCP Server Settings."""
+    value = os.environ.get("GIMP_MCP_PORT", "").strip()
+    if not value:
+        return DEFAULT_GIMP_PORT
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        logger.warning(f"Ignoring invalid GIMP_MCP_PORT={value!r}; using {DEFAULT_GIMP_PORT}")
+        return DEFAULT_GIMP_PORT
+    return port
+
+
+GIMP_PORT = _port_from_env()
+
+# Must match PLUGIN_VERSION in gimp-mcp-plugin.py and version in pyproject.toml
+# (tests/test_version_handshake.py checks this).
+SERVER_VERSION = "0.2.0"
+
+
+def _parse_version(value):
+    """Turn "1.2.3" into (1, 2, 3) so versions compare numerically; None if not parseable."""
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except ValueError:
+        return None
+
+
+def version_status(plugin_version):
+    """Compare the GIMP plugin's reported version with this server's.
+
+    Returns {"plugin_version", "server_version", "version_ok"}, plus a "version_warning"
+    telling the user what to update when they don't match. Plugins from before the
+    handshake don't report a version and count as outdated.
+    """
+    status = {
+        "plugin_version": plugin_version,
+        "server_version": SERVER_VERSION,
+        "version_ok": plugin_version == SERVER_VERSION,
+    }
+    if status["version_ok"]:
+        return status
+    update_plugin = (
+        f"Update the plugin: run `{install_plugin_command()}`, then restart GIMP."
+    )
+    plugin, server = _parse_version(plugin_version), _parse_version(SERVER_VERSION)
+    if plugin_version is None:
+        status["version_warning"] = (
+            f"The GIMP plugin is older than this MCP server (v{SERVER_VERSION}) and doesn't "
+            f"report a version, so some tools may fail. {update_plugin}"
+        )
+    elif plugin is not None and server is not None and plugin > server:
+        status["version_warning"] = (
+            f"The MCP server (v{SERVER_VERSION}) is older than the GIMP plugin "
+            f"(v{plugin_version}), so some tools may fail. Update the server "
+            f"({_update_server_hint()}) and restart your MCP client."
+        )
+    else:
+        status["version_warning"] = (
+            f"The GIMP plugin (v{plugin_version}) doesn't match this MCP server "
+            f"(v{SERVER_VERSION}), so some tools may fail. {update_plugin}"
+        )
+    return status
 
 class GimpConnection:
     def __init__(self, host=GIMP_HOST, port=GIMP_PORT):
@@ -30,11 +104,13 @@ class GimpConnection:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(10)
             self.sock.connect((self.host, self.port))
+            # 10s was too short for flattening/scaling multi-layer PSDs and 16-bit renders
+            self.sock.settimeout(300)
             logger.info(f"Connected to GIMP at {self.host}:{self.port}")
         except Exception as e:
             self.sock = None
             logger.error(f"Failed to connect: {e}")
-            raise ConnectionError(f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP Server plugin is running (Tools > Start MCP Server).")
+            raise ConnectionError(f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP server is running in GIMP (Tools > MCP > Start MCP Server, or enable autostart in Tools > MCP > MCP Server Settings) and that GIMP_MCP_PORT matches its port.")
 
     def disconnect(self):
         if self.sock:
@@ -84,8 +160,18 @@ def reset_gimp_connection():
         _gimp_connection.disconnect()
     _gimp_connection = None
 
+def _read_doc(name):
+    """Read a guidance doc from docs/ in a checkout, or from the installed package.
+
+    pyproject.toml ships docs/*.md in the wheel as the gimp_mcp_docs package.
+    """
+    local = Path(__file__).parent / "docs" / name
+    if local.is_file():
+        return local.read_text(encoding="utf-8")
+    return resources.files("gimp_mcp_docs").joinpath(name).read_text(encoding="utf-8")
+
 # MCP server
-mcp = FastMCP("GimpMCP", description="GIMP integration through MCP — with new_canvas, check_server, restart_server")
+mcp = FastMCP("GimpMCP", instructions="GIMP integration through MCP — with new_canvas, check_server, restart_server")
 
 @mcp.tool()
 def check_server(ctx: Context) -> dict:
@@ -95,19 +181,38 @@ def check_server(ctx: Context) -> dict:
     - connected: bool
     - host / port: where it tried
     - gimp_version: if connected successfully
-    - error: description if not connected
+    - plugin_version / server_version / version_ok: whether the GIMP plugin matches this server
+    - version_warning: present when they don't match; pass it on to the user
+    - error: description if not connected, or if GIMP is reachable but get_gimp_info failed
+      (connected stays true and no version check is done)
 
     Use this before any other operation to verify the GIMP plugin is running.
-    If not connected, open GIMP and run Tools > Start MCP Server.
+    If not connected, open GIMP and run Tools > MCP > Start MCP Server.
     """
     try:
         test_conn = GimpConnection(GIMP_HOST, GIMP_PORT)
         test_conn.connect()
         result = test_conn.send_command("get_gimp_info")
-        version = result.get("results", {}).get("version", {}).get("version_method", "unknown")
-        return {"connected": True, "host": GIMP_HOST, "port": GIMP_PORT, "gimp_version": version}
     except Exception as e:
         return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
+    if result.get("status") != "success":
+        # The plugin answered, so it's reachable, but without info there's no version to
+        # compare. Report the error rather than a misleading "plugin is outdated" warning.
+        return {
+            "connected": True,
+            "host": GIMP_HOST,
+            "port": GIMP_PORT,
+            "error": f"get_gimp_info failed: {result.get('error', 'Unknown error')}",
+        }
+    results = result.get("results", {})
+    version = results.get("version", {}).get("version_method", "unknown")
+    return {
+        "connected": True,
+        "host": GIMP_HOST,
+        "port": GIMP_PORT,
+        "gimp_version": version,
+        **version_status(results.get("mcp_plugin_version")),
+    }
 
 
 @mcp.tool()
@@ -300,7 +405,9 @@ def get_gimp_info(ctx: Context) -> dict:
         conn = get_gimp_connection()
         result = conn.send_command("get_gimp_info")
         if result["status"] == "success":
-            return result["results"]
+            info = result["results"]
+            info.update(version_status(info.get("mcp_plugin_version")))
+            return info
         else:
             raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
     except Exception as e:
@@ -494,8 +601,7 @@ def gimp_best_practices() -> str:
     This prompt provides critical DO/DON'T patterns that help AI assistants
     and users avoid common mistakes when working with GIMP through MCP.
     """
-    docs_path = Path(__file__).parent / "docs" / "best_practices.md"
-    return docs_path.read_text()
+    return _read_doc("best_practices.md")
 
 @mcp.prompt(
     description="Iterative workflow guidance for building complex images with proper validation and layer management"
@@ -510,8 +616,7 @@ def gimp_iterative_workflow() -> str:
     - Fix problems properly instead of painting over them
     - Leverage GIMP's professional features for clean, organized work
     """
-    docs_path = Path(__file__).parent / "docs" / "iterative_workflow.md"
-    return docs_path.read_text()
+    return _read_doc("iterative_workflow.md")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY 1 — File Operations
@@ -2704,6 +2809,11 @@ def get_pixel_color(
     - layer_name: Layer to sample from; defaults to active layer
 
     Returns: {color_hex, color_rgb: [r, g, b], alpha}
+    - color_hex / color_rgb: 8-bit sRGB values (0-255), i.e. what is shown on
+      screen and written to PNG export. A pixel painted #ff5733 reads back as
+      "#ff5733" / [255, 87, 51].
+    - alpha: 0-255 (255 = fully opaque).
+    Reads only the given layer, not the composite of all visible layers.
     """
     try:
         conn = get_gimp_connection()
@@ -2745,8 +2855,178 @@ def get_histogram(
         raise Exception(f"get_histogram failed: {e}")
 
 
-def main():
+# ─────────────────────────────────────────────────────────────────────────────
+# Plugin installation (`gimp-mcp-plugin install-plugin`)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PLUGIN_NAME = "gimp-mcp-plugin"
+# Shipped next to this module, both in a git checkout and in the installed package
+# (pyproject.toml lists it as an extra module).
+PLUGIN_SOURCE = Path(__file__).resolve().parent / f"{PLUGIN_NAME}.py"
+
+
+def _running_from_checkout():
+    """True when running from a source checkout rather than an installed package."""
+    return not {"site-packages", "dist-packages"} & set(Path(__file__).resolve().parts)
+
+
+def install_plugin_command():
+    """The command that installs the plugin matching this server's version."""
+    if _running_from_checkout():
+        return f'uv run --directory "{Path(__file__).resolve().parent}" gimp_mcp_server.py install-plugin'
+    return f"uvx gimp-mcp-plugin@{SERVER_VERSION} install-plugin"
+
+
+def _update_server_hint():
+    """How to update the server, for the version warning."""
+    if _running_from_checkout():
+        return "git pull in the gimp-mcp checkout"
+    return "use gimp-mcp-plugin@latest in your MCP client config"
+
+
+def _gimp_config_bases():
+    """Directories that hold GIMP's per-version config dirs (3.0, 3.2, ...) on this platform."""
+    home = Path.home()
+    if os.name == "nt":
+        return _windows_config_bases()
+    if sys.platform == "darwin":
+        return [home / "Library" / "Application Support" / "GIMP"]
+    xdg = os.environ.get("XDG_CONFIG_HOME") or str(home / ".config")
+    return [
+        Path(xdg) / "GIMP",
+        home / "snap" / "gimp" / "current" / ".config" / "GIMP",  # Snap
+        home / ".var" / "app" / "org.gimp.GIMP" / "config" / "GIMP",  # Flatpak
+    ]
+
+
+def _windows_config_bases():
+    """%APPDATA%\\GIMP, then the GIMP folders of MSIX (Microsoft Store) packages.
+
+    An MSIX GIMP whose %APPDATA%\\GIMP\\<ver> folder doesn't exist keeps its config in
+    %LOCALAPPDATA%\\Packages\\<package>\\LocalCache\\Roaming\\GIMP (see GIMP's gimpenv.c).
+    """
+    bases = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        bases.append(Path(appdata) / "GIMP")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        bases += sorted((Path(local) / "Packages").glob("*/LocalCache/Roaming/GIMP"))
+    return bases
+
+
+def find_gimp_config_dir():
+    """Return the newest GIMP 3.x per-user config dir, or None if GIMP 3 was never started.
+
+    GIMP creates a new dir per minor version (3.0, 3.2, ...); GIMP3_DIRECTORY overrides it.
+    On a version tie, the earlier base in _gimp_config_bases() wins.
+    """
+    override = os.environ.get("GIMP3_DIRECTORY")
+    if override:
+        path = Path(override).expanduser()
+        # GIMP resolves a relative GIMP3_DIRECTORY against the home dir, not the cwd.
+        return path if path.is_absolute() else Path.home() / path
+    candidates = []
+    for priority, base in enumerate(_gimp_config_bases()):
+        if not base.is_dir():
+            continue
+        for child in base.iterdir():
+            version = _parse_version(child.name)
+            if child.is_dir() and version and version[0] == 3:
+                candidates.append((version, -priority, child))
+    return max(candidates)[2] if candidates else None
+
+
+def _file_plugin_version(path):
+    """PLUGIN_VERSION from a plugin file, "unknown" for one predating it, None if missing."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    match = re.search(r'^PLUGIN_VERSION = "([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else "unknown"
+
+
+def install_plugin(gimp_dir=None, dry_run=False):
+    """Copy the bundled plugin into GIMP's plug-ins folder. Returns a summary dict."""
+    gimp_dir = Path(gimp_dir).expanduser() if gimp_dir else find_gimp_config_dir()
+    if gimp_dir is None:
+        raise RuntimeError(
+            "No GIMP 3 config folder found. Start GIMP once so it creates one, or pass "
+            "--gimp-dir with the folder shown in GIMP's Edit > Preferences > Folders "
+            "(the parent of its plug-ins folder, e.g. ~/.config/GIMP/3.2)."
+        )
+    if not PLUGIN_SOURCE.is_file():
+        raise RuntimeError(f"Bundled plugin not found at {PLUGIN_SOURCE}")
+    target = gimp_dir / "plug-ins" / PLUGIN_NAME / f"{PLUGIN_NAME}.py"
+    result = {
+        "gimp_dir": str(gimp_dir),
+        "target": str(target),
+        "previous_version": _file_plugin_version(target),
+        "new_version": _file_plugin_version(PLUGIN_SOURCE),
+        "dry_run": dry_run,
+    }
+    if not dry_run:
+        _copy_plugin(target)
+    return result
+
+
+def _copy_plugin(target):
+    """Copy the bundled plugin to target, replacing it only once the new copy is complete.
+
+    Writing to a temp file first means a failed copy (e.g. disk full) leaves any
+    installed plugin intact instead of truncated.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        shutil.copyfile(PLUGIN_SOURCE, tmp)
+        if os.name != "nt":
+            tmp.chmod(0o755)  # GIMP only runs plug-ins that are executable
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _install_plugin_cli(argv):
+    """`install-plugin` subcommand: parse arguments, install, print a summary. Returns the exit code."""
+    parser = argparse.ArgumentParser(
+        prog="gimp-mcp-plugin install-plugin",
+        description="Install or update the GIMP MCP plugin into GIMP 3's plug-ins folder.",
+    )
+    parser.add_argument("--gimp-dir", help="GIMP config folder, e.g. ~/.config/GIMP/3.2 "
+                        "(default: the newest GIMP 3.x folder found)")
+    parser.add_argument("--dry-run", action="store_true", help="show what would be done")
+    args = parser.parse_args(argv)
+    try:
+        r = install_plugin(args.gimp_dir, args.dry_run)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    previous = r["previous_version"]
+    change = "new install" if previous is None else f"replacing version {previous}"
+    verb = "Would install" if r["dry_run"] else "Installed"
+    print(f"{verb} GIMP MCP plugin {r['new_version']} ({change})")
+    print(f"  into {r['target']}")
+    if not r["dry_run"]:
+        print("Restart GIMP to load it, then start it from Tools > MCP > Start MCP Server.")
+    return 0
+
+
+def main(argv=None):
+    """Run the MCP server, or `install-plugin` to install the GIMP plugin."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "install-plugin":
+        sys.exit(_install_plugin_cli(argv[1:]))
+    if argv:
+        print("usage: gimp-mcp-plugin [install-plugin [--gimp-dir DIR] [--dry-run]]",
+              file=sys.stderr)
+        sys.exit(2)
     mcp.run()
+
 
 if __name__ == "__main__":
     main()

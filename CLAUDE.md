@@ -18,24 +18,28 @@ The system uses a client-server architecture:
 
 ## Installation & Setup
 
-### GIMP Plugin Installation
-GIMP's per-user config dir is named after its **major.minor** version (`3.0`, `3.2`, `3.4`, …)
-and a new one is created on each minor upgrade, so the `plug-ins` path moves when GIMP is
-upgraded (e.g. 3.0 → 3.2). Install into the directory matching the installed GIMP; the active
-path is shown in **Edit > Preferences > Folders > Plug-ins**. Base dirs per platform:
-- Linux: `~/.config/GIMP/<VER>` (Snap: `~/snap/gimp/current/.config/GIMP/<VER>`)
-- macOS: `~/Library/Application Support/GIMP/<VER>`
-- Windows: `%APPDATA%\GIMP\<VER>`
+The server and plugin ship together on PyPI as `gimp-mcp-plugin`; `uvx gimp-mcp-plugin` runs
+the server, and the bundled `gimp-mcp-plugin.py` is installed with the `install-plugin` subcommand.
 
+### GIMP Plugin Installation
 ```bash
-# Auto-select the newest GIMP 3.x config dir (snap example shown; adjust BASE per platform)
-BASE="$HOME/snap/gimp/current/.config/GIMP"
-GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
-mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
-chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
+uvx gimp-mcp-plugin@latest install-plugin            # from PyPI
+uv run gimp_mcp_server.py install-plugin             # from a checkout (installs this repo's plugin)
 ```
-Then start it from **Tools > MCP > Start MCP Server** in GIMP.
+It installs into `<GIMP config>/plug-ins/gimp-mcp-plugin/` under the newest GIMP 3.x config
+dir it finds (Linux standard/Snap/Flatpak, macOS, Windows; `GIMP3_DIRECTORY` overrides).
+`--dry-run` shows the target, `--gimp-dir DIR` sets it. GIMP's config dir is named after its
+**major.minor** version and moves on each minor upgrade (e.g. 3.0 → 3.2), so re-run it after
+upgrading GIMP; the active path is shown in **Edit > Preferences > Folders > Plug-ins**.
+
+Then start it from **Tools > MCP > Start MCP Server** in GIMP, or enable autostart (and set the
+port) in **Tools > MCP > MCP Server Settings...**. Settings are stored in `gimp-mcp.json` in the
+GIMP config dir; a non-default port must also be set as `GIMP_MCP_PORT` for the MCP server.
+
+The plugin and server versions must match exactly (`check_server` / `get_gimp_info` report a
+mismatch with the fix command). A release bumps `pyproject.toml` `version`, `SERVER_VERSION` in
+`gimp_mcp_server.py` and `PLUGIN_VERSION` in `gimp-mcp-plugin.py` together
+(`tests/test_version_handshake.py` checks this).
 
 ### MCP Server Configuration
 Add to Claude Desktop config (`~/.config/Claude/claude_desktop_config.json`):
@@ -43,12 +47,15 @@ Add to Claude Desktop config (`~/.config/Claude/claude_desktop_config.json`):
 {
   "mcpServers": {
     "gimp": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/gimp-mcp", "gimp-mcp-server.py"]
+      "command": "uvx",
+      "args": ["gimp-mcp-plugin@latest"]
     }
   }
 }
 ```
+For development, run from the checkout instead:
+`"command": "uv", "args": ["run", "--directory", "/path/to/gimp-mcp", "gimp_mcp_server.py"]`.
+Claude Code started in the repo uses `.mcp.json`, which does the same.
 
 ## Development Commands
 
