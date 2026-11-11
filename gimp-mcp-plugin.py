@@ -31,6 +31,11 @@ LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
 
+# Reported to the MCP server, which warns when it doesn't match its own version.
+# Keep in sync with SERVER_VERSION in gimp_mcp_server.py and version in pyproject.toml
+# (tests/test_version_handshake.py checks this).
+PLUGIN_VERSION = "0.1.0"
+
 DEFAULT_PORT = 9877
 SETTINGS_FILE_NAME = "gimp-mcp.json"
 DEFAULT_SETTINGS = {"autostart": False, "port": DEFAULT_PORT}
@@ -1391,8 +1396,8 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             print("Getting GIMP environment information...")
             
-            gimp_info = {}
-            
+            gimp_info = {"mcp_plugin_version": PLUGIN_VERSION}
+
             # Basic GIMP version and build information
             try:
                 version_info = {}

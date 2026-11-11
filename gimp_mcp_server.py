@@ -36,6 +36,57 @@ def _port_from_env():
 
 GIMP_PORT = _port_from_env()
 
+# Must match PLUGIN_VERSION in gimp-mcp-plugin.py and version in pyproject.toml
+# (tests/test_version_handshake.py checks this).
+SERVER_VERSION = "0.1.0"
+INSTALL_DOCS = "https://github.com/gimp-mcp/gimp-mcp#2-install-the-gimp-plugin"
+
+
+def _parse_version(value):
+    """Turn "1.2.3" into (1, 2, 3) so versions compare numerically; None if not parseable."""
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except ValueError:
+        return None
+
+
+def version_status(plugin_version):
+    """Compare the GIMP plugin's reported version with this server's.
+
+    Returns {"plugin_version", "server_version", "version_ok"}, plus a "version_warning"
+    telling the user what to update when they don't match. Plugins from before the
+    handshake don't report a version and count as outdated.
+    """
+    status = {
+        "plugin_version": plugin_version,
+        "server_version": SERVER_VERSION,
+        "version_ok": plugin_version == SERVER_VERSION,
+    }
+    if status["version_ok"]:
+        return status
+    update_plugin = (
+        f"Update the plugin: copy gimp-mcp-plugin.py from this server's checkout into "
+        f"GIMP's plug-ins folder (see {INSTALL_DOCS}), then restart GIMP."
+    )
+    plugin, server = _parse_version(plugin_version), _parse_version(SERVER_VERSION)
+    if plugin_version is None:
+        status["version_warning"] = (
+            f"The GIMP plugin is older than this MCP server (v{SERVER_VERSION}) and doesn't "
+            f"report a version, so some tools may fail. {update_plugin}"
+        )
+    elif plugin is not None and server is not None and plugin > server:
+        status["version_warning"] = (
+            f"The MCP server (v{SERVER_VERSION}) is older than the GIMP plugin "
+            f"(v{plugin_version}), so some tools may fail. Update the server "
+            f"(git pull in the gimp-mcp checkout) and restart your MCP client."
+        )
+    else:
+        status["version_warning"] = (
+            f"The GIMP plugin (v{plugin_version}) doesn't match this MCP server "
+            f"(v{SERVER_VERSION}), so some tools may fail. {update_plugin}"
+        )
+    return status
+
 class GimpConnection:
     def __init__(self, host=GIMP_HOST, port=GIMP_PORT):
         self.host = host
@@ -116,19 +167,38 @@ def check_server(ctx: Context) -> dict:
     - connected: bool
     - host / port: where it tried
     - gimp_version: if connected successfully
-    - error: description if not connected
+    - plugin_version / server_version / version_ok: whether the GIMP plugin matches this server
+    - version_warning: present when they don't match; pass it on to the user
+    - error: description if not connected, or if GIMP is reachable but get_gimp_info failed
+      (connected stays true and no version check is done)
 
     Use this before any other operation to verify the GIMP plugin is running.
-    If not connected, open GIMP and run Tools > Start MCP Server.
+    If not connected, open GIMP and run Tools > MCP > Start MCP Server.
     """
     try:
         test_conn = GimpConnection(GIMP_HOST, GIMP_PORT)
         test_conn.connect()
         result = test_conn.send_command("get_gimp_info")
-        version = result.get("results", {}).get("version", {}).get("version_method", "unknown")
-        return {"connected": True, "host": GIMP_HOST, "port": GIMP_PORT, "gimp_version": version}
     except Exception as e:
         return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
+    if result.get("status") != "success":
+        # The plugin answered, so it's reachable, but without info there's no version to
+        # compare. Report the error rather than a misleading "plugin is outdated" warning.
+        return {
+            "connected": True,
+            "host": GIMP_HOST,
+            "port": GIMP_PORT,
+            "error": f"get_gimp_info failed: {result.get('error', 'Unknown error')}",
+        }
+    results = result.get("results", {})
+    version = results.get("version", {}).get("version_method", "unknown")
+    return {
+        "connected": True,
+        "host": GIMP_HOST,
+        "port": GIMP_PORT,
+        "gimp_version": version,
+        **version_status(results.get("mcp_plugin_version")),
+    }
 
 
 @mcp.tool()
@@ -321,7 +391,9 @@ def get_gimp_info(ctx: Context) -> dict:
         conn = get_gimp_connection()
         result = conn.send_command("get_gimp_info")
         if result["status"] == "success":
-            return result["results"]
+            info = result["results"]
+            info.update(version_status(info.get("mcp_plugin_version")))
+            return info
         else:
             raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
     except Exception as e:
