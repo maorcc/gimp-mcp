@@ -71,7 +71,25 @@ t('list_images',      cmd('list_images', {}))
 t('get_metadata',     cmd('get_image_metadata'))
 t('list_layers',      cmd('list_layers', {'image_index': 0}))
 t('pixel_color',      cmd('get_pixel_color', {'image_index': 0, 'x': 10, 'y': 10}))
-t('get_histogram',    cmd('get_histogram', {'image_index': 0, 'channel': 'value'}))
+_hist = t('get_histogram', cmd('get_histogram', {'image_index': 0, 'channel': 'value'}))
+# Regression #47: the canvas is still a uniform white 200x200 fill here, so
+# every statistic is known. Reading the PDB status slot as 'mean' (the
+# off-by-one fixed in #48) gives mean=3 and shifts every other field.
+_h = _hist.get('results', {})
+_expected = {'mean': 255.0, 'std_dev': 0.0, 'median': 255.0, 'pixels': 40000.0, 'count': 40000.0}
+chk('histogram_values',
+    all(isinstance(_h.get(k), (int, float)) and abs(_h[k] - v) < 0.01 for k, v in _expected.items()),
+    _h)
+# A uniform fill has std_dev 0, the same as _safe()'s fallback, so also check
+# a non-uniform image: columns 0-49 black, the rest white (1 in 4 black).
+# mean = 0.75 * 255, std_dev = 255 * sqrt(0.25 * 0.75), median = 255.
+cmd('fill_rectangle', {'image_index': 0, 'x': 0, 'y': 0, 'width': 50, 'height': 200, 'color': '#000000'})
+_h = cmd('get_histogram', {'image_index': 0, 'channel': 'value'}).get('results', {})
+_expected = {'mean': 191.25, 'std_dev': 110.4182, 'median': 255.0, 'pixels': 40000.0, 'count': 40000.0}
+chk('histogram_values_mixed',
+    all(isinstance(_h.get(k), (int, float)) and abs(_h[k] - v) < 0.01 for k, v in _expected.items()),
+    _h)
+cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})  # restore the white canvas for later tests
 t('selection_bounds', cmd('get_selection_bounds', {'image_index': 0}))
 
 print()
