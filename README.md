@@ -73,66 +73,34 @@ The AI removes the background, takes a snapshot to inspect the result, detects r
 ## Prerequisites
 
 - **GIMP 3.2+** — tested on GIMP 3.2.2 (Windows, macOS, Linux)
-- **Python 3.11+** — for the MCP server
-- **uv** — Python package manager (`pip install uv`)
+- **uv** — Python package manager ([install uv](https://docs.astral.sh/uv/getting-started/installation/)); `uvx` downloads the MCP server and a suitable Python (3.11+) on first use
 - **MCP-compatible AI client** — Claude Desktop, Claude Code, Gemini CLI, PydanticAI, etc.
 
 ---
 
 ## Quick Start
 
-### 1. Install Dependencies
+The MCP server and the GIMP plugin ship together as the [`gimp-mcp-plugin`](https://pypi.org/project/gimp-mcp-plugin/) package on PyPI. No clone needed.
+
+### 1. Install the GIMP Plugin
+
+Launch GIMP once (so its config folder exists), close it, then run:
 
 ```bash
-git clone https://github.com/gimp-mcp/gimp-mcp.git
-cd gimp-mcp
-uv sync
+uvx gimp-mcp-plugin@latest install-plugin
 ```
 
-### 2. Install the GIMP Plugin
+This copies the plugin into the newest GIMP 3.x config folder it finds (Linux standard, Snap and Flatpak locations, macOS, Windows) and makes it executable. Restart GIMP afterwards.
 
-Copy `gimp-mcp-plugin.py` to GIMP's plug-ins directory and restart GIMP.
+- `--dry-run` shows where it would install without writing anything.
+- `--gimp-dir DIR` installs into a specific GIMP config folder, e.g. `--gimp-dir ~/.config/GIMP/3.2`.
 
-> **Which directory?** GIMP names its per-user folder after its **major.minor** version
-> (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
-> *moves* when you upgrade GIMP (e.g. `3.0` → `3.2`). The snippet below auto-selects the
-> newest one, so it keeps working across upgrades. To check the path manually, open GIMP
-> and look at **Edit → Preferences → Folders → Plug-ins**.
->
-> Launch GIMP at least once before running this, so its config folder exists.
+> **Which folder does GIMP use?** GIMP names its per-user folder after its **major.minor**
+> version (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the
+> plug-ins folder *moves* when you upgrade GIMP. Re-run `install-plugin` after upgrading.
+> To check the active path, open **Edit → Preferences → Folders → Plug-ins** in GIMP.
 
-**macOS / Linux:**
-```bash
-# Base directories to search. The Linux line covers both the standard and the Snap
-# location, since Snap builds of GIMP can use either one.
-BASES=("$HOME/Library/Application Support/GIMP")                           # macOS
-# BASES=("$HOME/.config/GIMP" "$HOME/snap/gimp/current/.config/GIMP")     # Linux
-
-# Auto-select the newest GIMP 3.x config directory (3.0, 3.2, 3.4, ...), comparing
-# versions by folder name so a newer version wins regardless of which base it is in.
-# find with a quoted pattern works the same in bash and zsh, even if a base is missing.
-GIMP_DIR="$(for b in "${BASES[@]}"; do
-    find -L "$b" -mindepth 1 -maxdepth 1 -type d -name '3.*' 2>/dev/null; done \
-  | awk -F/ '{print $NF "\t" $0}' | sort -V | tail -1 | cut -f2)"
-if [ -z "$GIMP_DIR" ]; then
-  echo "No GIMP 3.x config dir found — launch GIMP once, then re-run." >&2
-else
-  mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-  cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
-  chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
-  echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
-fi
-```
-
-**Windows:**
-```text
-%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
-```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Just copy and restart GIMP.
-
-> For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
-
-### 3. Start the MCP Server in GIMP
+### 2. Start the MCP Server in GIMP
 
 1. Open any image in GIMP
 2. Go to **Tools > MCP > Start MCP Server**
@@ -148,8 +116,8 @@ in your MCP client config so the MCP server connects to the same port:
 
 ```json
 "gimp": {
-  "command": "uv",
-  "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"],
+  "command": "uvx",
+  "args": ["gimp-mcp-plugin@latest"],
   "env": { "GIMP_MCP_PORT": "9988" }
 }
 ```
@@ -157,7 +125,9 @@ in your MCP client config so the MCP server connects to the same port:
 Settings are saved to `gimp-mcp.json` in GIMP's per-user config folder (e.g.
 `~/.config/GIMP/3.2/gimp-mcp.json`). Port changes apply the next time the server starts.
 
-### 4. Configure Your MCP Client
+### 3. Configure Your MCP Client
+
+`gimp-mcp-plugin@latest` makes `uvx` check PyPI for a new release each time your client starts the server.
 
 #### Claude Desktop
 `~/.config/Claude/claude_desktop_config.json` (Linux/macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
@@ -166,8 +136,8 @@ Settings are saved to `gimp-mcp.json` in GIMP's per-user config folder (e.g.
 {
   "mcpServers": {
     "gimp": {
-      "command": "uv",
-      "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+      "command": "uvx",
+      "args": ["gimp-mcp-plugin@latest"]
     }
   }
 }
@@ -175,13 +145,7 @@ Settings are saved to `gimp-mcp.json` in GIMP's per-user config folder (e.g.
 
 #### Claude Code
 ```bash
-cd /path/to/gimp-mcp
-claude  # .mcp.json is auto-detected
-```
-
-Or manually:
-```bash
-claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
+claude mcp add gimp-mcp -- uvx gimp-mcp-plugin@latest
 ```
 
 #### Gemini CLI
@@ -190,8 +154,8 @@ claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_se
 {
   "mcpServers": {
     "gimp": {
-      "command": "uv",
-      "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+      "command": "uvx",
+      "args": ["gimp-mcp-plugin@latest"]
     }
   }
 }
@@ -202,9 +166,38 @@ claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_se
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPServerStdio
 
-server = MCPServerStdio('uv', args=['run', '--directory', '/path/to/gimp-mcp', 'gimp_mcp_server.py'])
+server = MCPServerStdio('uvx', args=['gimp-mcp-plugin@latest'])
 agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ```
+
+### Updating
+
+The plugin and the MCP server must be the same version. `check_server` and `get_gimp_info` report a mismatch and print the command that fixes it. To update both:
+
+1. Restart your MCP client. With `@latest`, it picks up the newest server.
+2. Run `uvx gimp-mcp-plugin@latest install-plugin` and restart GIMP.
+
+### Running from a Git Checkout (contributors)
+
+To work on the code, run the server and install the plugin from a clone instead:
+
+```bash
+git clone https://github.com/gimp-mcp/gimp-mcp.git
+cd gimp-mcp
+uv sync
+uv run gimp_mcp_server.py install-plugin    # installs this checkout's plugin
+```
+
+Then point your MCP client at the checkout, e.g. for Claude Desktop:
+
+```json
+"gimp": {
+  "command": "uv",
+  "args": ["run", "--directory", "/full/path/to/gimp-mcp", "gimp_mcp_server.py"]
+}
+```
+
+Claude Code picks up the repo's `.mcp.json` automatically when started in the checkout. After `git pull`, re-run `install-plugin` if the plugin changed.
 
 ---
 
@@ -462,8 +455,8 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 
 ### Plugin Not Visible in GIMP
 - Look under **Tools > MCP** (the plugin adds an `MCP` submenu, not a top-level `Tools` entry)
-- Confirm the plugin file is in the correct directory (see install steps above)
-- **Upgraded GIMP recently?** A minor upgrade (e.g. 3.0 → 3.2) moves the per-user config folder to a new version directory; reinstall the plugin into the new version's `plug-ins` folder. Verify the active path via **Edit > Preferences > Folders > Plug-ins**.
+- Confirm the plugin file is in the correct directory: `uvx gimp-mcp-plugin@latest install-plugin --dry-run` shows where it goes
+- **Upgraded GIMP recently?** A minor upgrade (e.g. 3.0 → 3.2) moves the per-user config folder to a new version directory; re-run `uvx gimp-mcp-plugin@latest install-plugin` (use `--dry-run` to see which folder it picks). Verify the active path via **Edit > Preferences > Folders > Plug-ins**.
 - On Linux/macOS: ensure the file has execute permission (`chmod +x`)
 - Restart GIMP after installation
 - Check **Filters > Script-Fu > Console** for error messages
@@ -474,11 +467,6 @@ Run the test suite and check the failure list:
 python run_tests.py
 ```
 Each failure includes the tool name and error — most issues on GIMP 3.2 are covered by the fixes above.
-
-### Debug Mode
-```bash
-GIMP_MCP_DEBUG=1 uv run --directory /path/to/gimp-mcp gimp_mcp_server.py
-```
 
 ---
 
