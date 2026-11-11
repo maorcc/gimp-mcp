@@ -889,8 +889,8 @@ class MCPPlugin(Gimp.PlugIn):
                     "error": "No images are currently open in GIMP"
                 }
             
-            # Use the first image (most recently active)
-            original_image = images[0]
+            # Honour image_index (default 0 = most recently opened image)
+            original_image = self._get_image(int(params.get("image_index", 0)))
             
             # Get original image dimensions
             orig_img_width = original_image.get_width()
@@ -1977,44 +1977,33 @@ class MCPPlugin(Gimp.PlugIn):
             gio_file = Gio.File.new_for_path(file_path)
             pdb = Gimp.get_pdb()
             fmt_lower = fmt.lower()
+            # GIMP 3 export procedures; the GIMP 2 "*-save" names no longer
+            # exist, and falling back to PNG wrote PNG bytes into .jpg files.
             proc_name_map = {
-                "png":  "file-png-save",
-                "jpeg": "file-jpeg-save",
-                "jpg":  "file-jpeg-save",
-                "webp": "file-webp-save",
-                "tiff": "file-tiff-save",
+                "png":  "file-png-export",
+                "jpeg": "file-jpeg-export",
+                "jpg":  "file-jpeg-export",
+                "webp": "file-webp-export",
+                "tiff": "file-tiff-export",
+                "tif":  "file-tiff-export",
             }
-            proc_name = proc_name_map.get(fmt_lower, "file-png-save")
+            proc_name = proc_name_map.get(fmt_lower)
+            if proc_name is None:
+                raise RuntimeError(f"Unsupported export format: {fmt}")
             proc = pdb.lookup_procedure(proc_name)
             if proc is None:
-                # Fallback: try generic file-png-export
-                proc = pdb.lookup_procedure("file-png-export")
-            if proc is None:
-                Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
-            else:
-                cfg = proc.create_config()
-                cfg.set_property("image", image)
-                cfg.set_property("file", gio_file)
-                try:
-                    layers = image.get_layers()
-                    drawable = (image.get_selected_layers() or layers or [None])[0]
-                    try:
-                        cfg.set_property("drawable", drawable)
-                    except Exception:
-                        pass
-                    if fmt_lower in ("jpeg", "jpg"):
-                        try:
-                            cfg.set_property("quality", quality / 100.0)
-                        except Exception:
-                            pass
-                    if fmt_lower == "webp":
-                        try:
-                            cfg.set_property("quality", float(quality))
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                proc.run(cfg)
+                raise RuntimeError(f"Export procedure '{proc_name}' is not available")
+            cfg = proc.create_config()
+            cfg.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
+            cfg.set_property("image", image)
+            cfg.set_property("file", gio_file)
+            if fmt_lower in ("jpeg", "jpg"):
+                cfg.set_property("quality", quality / 100.0)
+            elif fmt_lower == "webp":
+                cfg.set_property("quality", float(quality))
+            result = proc.run(cfg)
+            if result.index(0) != Gimp.PDBStatusType.SUCCESS:
+                raise RuntimeError(f"{proc_name} failed for {file_path}")
             return os.path.getsize(file_path)
         finally:
             if should_delete:
@@ -2024,45 +2013,37 @@ class MCPPlugin(Gimp.PlugIn):
                     pass
 
     def _apply_gegl_filter(self, image, drawable, op_name, props):
-        """Apply a GEGL operation to a drawable via gimp-drawable-filter-new."""
-        pdb = Gimp.get_pdb()
-        # Try the GEGL filter approach via PDB
-        filter_proc = pdb.lookup_procedure("gimp-drawable-filter-new")
-        if filter_proc:
-            cfg = filter_proc.create_config()
-            cfg.set_property("drawable", drawable)
-            cfg.set_property("operation-name", op_name)
-            cfg.set_property("name", op_name)
-            result = filter_proc.run(cfg)
-            # Get the filter object
-            try:
-                filtr = result.index(0)
-                for k, v in props.items():
-                    try:
-                        filtr.set_property(k, v)
-                    except Exception:
-                        pass
-                # Apply filter (merge)
-                apply_proc = pdb.lookup_procedure("gimp-drawable-merge-filter")
-                if apply_proc:
-                    acfg = apply_proc.create_config()
-                    acfg.set_property("drawable", drawable)
-                    acfg.set_property("filter", filtr)
-                    apply_proc.run(acfg)
-            except Exception:
-                pass
-        else:
-            # Fallback: execute via exec context
-            props_code = ", ".join(f'"{k}", {repr(v)}' for k, v in props.items())
-            cmds = [
-                "from gi.repository import Gimp, Gegl",
-                "_img = Gimp.get_images()[0]",
-                "_d = (_img.get_selected_layers() or _img.get_layers() or [None])[0]",
-                f"_d.apply_drawable_filter_new('{op_name}', '', [{props_code}])",
-                "Gimp.displays_flush()",
-            ]
-            for cmd in cmds:
-                exec(cmd, self.context)
+        """Apply a GEGL operation destructively via Gimp.DrawableFilter.
+
+        Raises on an unknown operation or an unknown/out-of-range property so
+        callers report an error instead of a success with unchanged pixels.
+        """
+        try:
+            filtr = Gimp.DrawableFilter.new(drawable, op_name, op_name)
+        except TypeError:
+            filtr = None
+        if filtr is None:
+            raise RuntimeError(f"GEGL operation '{op_name}' is not available")
+        config = filtr.get_config()
+        for key, value in props.items():
+            pspec = config.find_property(key)
+            if pspec is None:
+                raise RuntimeError(f"GEGL operation '{op_name}' has no property '{key}'")
+            lo = getattr(pspec, "minimum", None)
+            hi = getattr(pspec, "maximum", None)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and lo is not None:
+                if not lo <= value <= hi:
+                    raise ValueError(f"{op_name} property '{key}'={value} is outside [{lo}, {hi}]")
+            # GIMP 3.2 exposes GEGL enum properties as GimpParamChoice (string
+            # nicks); an unknown nick is silently ignored, so reject it here.
+            if pspec.__gtype__.name == "GimpParamChoice":
+                choice = Gimp.param_spec_choice_get_choice(pspec)
+                if not choice.is_valid(value):
+                    raise ValueError(f"{op_name} property '{key}'={value!r} is not one of "
+                                     f"{', '.join(choice.list_nicks())}")
+            config.set_property(key, value)
+        filtr.update()
+        drawable.merge_filter(filtr)
 
     # =========================================================================
     # CATEGORY 1 — File Operations
@@ -3746,7 +3727,7 @@ class MCPPlugin(Gimp.PlugIn):
           1. Duplicate source layer → shadow_layer
           2. Fill it with shadow color (alpha-locked so shape is preserved)
           3. Set opacity and offset
-          4. Gaussian-blur with plug-in-gauss
+          4. Gaussian-blur (plug-in-gauss, or gegl:gaussian-blur on GIMP 3.2)
         """
         try:
             from gi.repository import Gegl
@@ -3779,8 +3760,17 @@ class MCPPlugin(Gimp.PlugIn):
                 offs = shadow_layer.get_offsets()
                 shadow_layer.set_offsets(offs.offset_x + offset_x, offs.offset_y + offset_y)
 
-                # 4. Blur with plug-in-gauss (always available in GIMP 3.x)
+                # 4. Blur: plug-in-gauss where it exists (older GIMP), otherwise
+                #    gegl:gaussian-blur (plug-in-gauss is gone in GIMP 3.2).
+                #    Pad the layer first so the blur is not clipped at its edges.
                 if blur_radius > 0:
+                    pad = int(blur_radius * 3) + 1
+                    if not shadow_layer.has_alpha():
+                        shadow_layer.add_alpha()
+                    # Gimp.Layer.resize explicitly: a copied text layer's own
+                    # resize() is the 2-argument text-box resize.
+                    Gimp.Layer.resize(shadow_layer, shadow_layer.get_width() + 2 * pad,
+                                      shadow_layer.get_height() + 2 * pad, pad, pad)
                     size = max(3, int(blur_radius * 2) | 1)  # must be odd, ≥ 3
                     blur_proc = pdb.lookup_procedure("plug-in-gauss")
                     if blur_proc:
@@ -3791,6 +3781,12 @@ class MCPPlugin(Gimp.PlugIn):
                         cfg.set_property("vertical",   size)
                         cfg.set_property("method",     0)
                         blur_proc.run(cfg)
+                    else:
+                        self._apply_gegl_filter(image, shadow_layer, "gegl:gaussian-blur", {
+                            "std-dev-x": blur_radius,
+                            "std-dev-y": blur_radius,
+                        })
+                    shadow_layer.set_opacity(opacity)
 
                 shadow_layer.set_name("Drop Shadow")
             finally:
@@ -3857,8 +3853,8 @@ class MCPPlugin(Gimp.PlugIn):
                 self._apply_gegl_filter(image, drawable, "gegl:emboss", {
                     "azimuth":   azimuth,
                     "elevation": elevation,
-                    "depth":     depth,
-                    "emboss":    True,
+                    "depth":     int(depth),
+                    "type":      "emboss",
                 })
             finally:
                 image.undo_group_end()
@@ -3878,9 +3874,13 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
             try:
+                # gegl:vignette takes softness in [0, 1] and a named shape;
+                # map the tool's shape factor (1.0 = elliptical, >1 = more
+                # rectangular) onto it. proportion keeps GEGL's default (1.0),
+                # which follows the layer's aspect ratio.
                 self._apply_gegl_filter(image, drawable, "gegl:vignette", {
-                    "softness": softness,
-                    "shape":    shape,
+                    "softness": max(0.0, min(softness, 1.0)),
+                    "shape":    "circle" if shape <= 1.0 else "square",
                     "radius":   1.0,
                 })
             finally:
@@ -3901,9 +3901,9 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(image, drawable, "gegl:noise-hsv", {
-                    "value": amount,
-                    "saturation": 0.0,
-                    "hue": 0.0,
+                    "value-distance":      amount,
+                    "saturation-distance": 0.0,
+                    "hue-distance":        0.0,
                 })
             finally:
                 image.undo_group_end()
@@ -4000,8 +4000,19 @@ class MCPPlugin(Gimp.PlugIn):
                         new_h, new_w = mh, max(1, int(mh * aspect))
                     dup.scale(new_w, new_h)
 
-                gio_file = dup.get_file()
-                raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else "image"
+                # Name after the source image: a duplicate has no file, which
+                # made every export land on image.jpg / image.png.
+                gio_file = image.get_file()
+                source_path = gio_file.get_path() if gio_file else None
+                raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else f"image_{image_index}"
+                if source_path:
+                    # Never let an export overwrite the source file itself.
+                    source_path = os.path.normcase(os.path.abspath(source_path))
+                    while any(
+                        os.path.normcase(os.path.abspath(os.path.join(output_dir, f"{raw_name}.{ext}"))) == source_path
+                        for ext in ("jpg", "png")
+                    ):
+                        raw_name += "_web"
                 jpeg_path = os.path.join(output_dir, f"{raw_name}.jpg")
                 png_path  = os.path.join(output_dir, f"{raw_name}.png")
                 jpeg_size = self._export_to_path(dup, jpeg_path, "jpeg", jpeg_quality, True)

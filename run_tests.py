@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
+import base64
 import socket
 import json
+import os
+import shutil
+import struct
 import sys
+import tempfile
+import zlib
 
-def cmd(t, params=None):
+def send(msg):
     s = socket.socket()
     s.settimeout(20)
     s.connect(('127.0.0.1', 9877))
-    msg = {'type': t, 'params': params if params is not None else {}}
     s.send(json.dumps(msg).encode() + b'\n')
     r = b''
     while True:
@@ -28,6 +33,38 @@ def cmd(t, params=None):
         return json.loads(r.decode().strip())
     except json.JSONDecodeError:
         return {'status': 'error', 'error': 'parse error: ' + r.decode()[:80]}
+
+def cmd(t, params=None):
+    return send({'type': t, 'params': params if params is not None else {}})
+
+def bitmap(params=None):
+    """Return an image's composite pixel stream (decompressed PNG IDAT), or None on error.
+
+    Raw PNG bytes can't be compared directly: the export embeds a timestamp.
+    """
+    data = cmd('get_image_bitmap', params or {}).get('results', {}).get('image_data')
+    if not data:
+        return None
+    png, pos, idat = base64.b64decode(data), 8, b''
+    while pos < len(png):
+        length = struct.unpack('>I', png[pos:pos + 4])[0]
+        if png[pos + 4:pos + 8] == b'IDAT':
+            idat += png[pos + 8:pos + 8 + length]
+        pos += 12 + length
+    return zlib.decompress(idat)
+
+def magic(path):
+    """Identify a file's real format from its leading bytes."""
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(12)
+    except OSError as e:
+        return str(e)
+    if head.startswith(b'\x89PNG'):
+        return 'png'
+    if head.startswith(b'\xff\xd8\xff'):
+        return 'jpeg'
+    return repr(head[:4])
 
 passed = 0
 failed = 0
@@ -151,6 +188,86 @@ t('emboss',        cmd('apply_emboss',        {'image_index': 0}))
 t('vignette',      cmd('apply_vignette',      {'image_index': 0}))
 t('noise',         cmd('apply_noise',         {'image_index': 0}))
 t('drop_shadow',   cmd('apply_drop_shadow',   {'image_index': 0}))
+
+print()
+print("=== Cat 9: Filters change pixels ===")
+# Regression: GEGL-backed tools used to return success with unchanged pixels.
+# Paint a known two-tone pattern, then require each tool to alter the composite.
+_info = next(i for i in cmd('list_images', {}).get('results', {}).get('images', []) if i['index'] == 0)
+W, H = _info['width'], _info['height']
+t('px_flatten', cmd('flatten_image',  {'image_index': 0}))
+t('px_fill',    cmd('fill_layer',     {'image_index': 0, 'color': '#a0a0a0'}))
+t('px_rect',    cmd('fill_rectangle', {'image_index': 0, 'x': 0, 'y': 0, 'width': W // 2, 'height': H, 'color': '#404040'}))
+
+def changes(name, tool, params):
+    """Run a tool and assert the image composite actually changed."""
+    before = bitmap({'image_index': 0})
+    r = t(name, cmd(tool, dict(params, image_index=0)))
+    after = bitmap({'image_index': 0})
+    chk(name + '_changes_pixels', before is not None and after is not None and before != after,
+        'pixels changed' if before != after else 'pixels unchanged')
+    return r
+
+changes('px_sharpen',       'sharpen',             {'amount': 80, 'radius': 2.0})
+changes('px_blur',          'blur',                {'radius_x': 2.0, 'radius_y': 2.0})
+changes('px_gaussian_blur', 'apply_gaussian_blur', {'radius': 2.0})
+changes('px_pixelate',      'apply_pixelate',      {'block_size': 8})
+changes('px_emboss',        'apply_emboss',        {})
+changes('px_vignette',      'apply_vignette',      {})
+changes('px_noise',         'apply_noise',         {'amount': 0.3})
+changes('px_denoise',       'denoise',             {})
+
+# Drop shadow must be blurred (soft edge) and keep the requested opacity.
+t('px_box_layer', cmd('create_layer',   {'image_index': 0, 'name': 'Box'}))
+t('px_box_fill',  cmd('fill_rectangle', {'image_index': 0, 'layer_name': 'Box', 'x': 30, 'y': 30,
+                                         'width': 40, 'height': 40, 'color': '#ff0000'}))
+changes('px_drop_shadow', 'apply_drop_shadow', {'layer_name': 'Box', 'offset_x': 8, 'offset_y': 8,
+                                                'blur_radius': 4, 'opacity': 50})
+_layers = cmd('list_layers', {'image_index': 0}).get('results', {}).get('layers', [])
+_shadow = next((lyr for lyr in _layers if lyr['name'] == 'Drop Shadow'), None)
+chk('px_shadow_opacity', _shadow is not None and round(_shadow['opacity']) == 50, _shadow and _shadow['opacity'])
+_alpha = None
+if _shadow:
+    # Left edge of the shadow rectangle (image x=38) in layer coordinates.
+    _ox, _oy = _shadow['offsets'][1], _shadow['offsets'][2]
+    _px = cmd('get_pixel_color', {'image_index': 0, 'layer_name': 'Drop Shadow', 'x': 38 - _ox, 'y': 50 - _oy})
+    _alpha = _px.get('results', {}).get('alpha')
+chk('px_shadow_blurred', _alpha is not None and 0 < _alpha < 255, f'edge alpha={_alpha}')
+
+print()
+print("=== Cat 10: Export formats ===")
+# Regression: .jpg exports used to contain PNG bytes, and export_web_optimized
+# always wrote image.jpg / image.png.
+out_dir = tempfile.mkdtemp(prefix='gimp_mcp_test_')
+for fmt, want in (('png', 'png'), ('jpg', 'jpeg')):
+    path = os.path.join(out_dir, 'export_test.' + fmt)
+    t('export_' + fmt, cmd('export_image', {'image_index': 0, 'file_path': path, 'format': fmt}))
+    chk('export_' + fmt + '_magic', magic(path) == want, magic(path))
+_web = t('export_web', cmd('export_web_optimized', {'image_index': 0, 'output_dir': out_dir, 'max_width': 64}))
+_web = _web.get('results', {})
+for key, want in (('jpeg_path', 'jpeg'), ('png_path', 'png')):
+    chk('export_web_' + want + '_magic', magic(_web.get(key, '')) == want, magic(_web.get(key, '')))
+chk('export_web_named', bool(_web) and not os.path.basename(_web.get('jpeg_path', '')).startswith('image.'),
+    _web.get('jpeg_path'))
+_batch = t('batch_export_jpg', cmd('batch_export', {'image_index': 0, 'output_dir': out_dir, 'format': 'jpg'}))
+_exported = _batch.get('results', {}).get('exported', [])
+chk('batch_export_jpg_magic', bool(_exported) and magic(_exported[0]['file_path']) == 'jpeg',
+    _exported and magic(_exported[0]['file_path']))
+shutil.rmtree(out_dir, ignore_errors=True)
+
+print()
+print("=== Cat 11: get_image_bitmap image_index ===")
+# Regression: get_image_bitmap always rendered images[0]. Add a small
+# display-less duplicate and require each index to return its own size.
+t('dup_image', send({'cmds': ["_t_dup = Gimp.get_images()[0].duplicate()", "_t_dup.scale(48, 32)"]}))
+_imgs = cmd('list_images', {}).get('results', {}).get('images', [])
+for label, info in (('dup',  next((i for i in _imgs if (i['width'], i['height']) == (48, 32)), None)),
+                    ('orig', next((i for i in _imgs if i['image_id'] == img_id), None))):
+    _res = cmd('get_image_bitmap', {'image_index': info['index']}).get('results', {}) if info else {}
+    chk('bitmap_index_' + label,
+        info is not None and (_res.get('width'), _res.get('height')) == (info['width'], info['height']),
+        f"want {info and (info['width'], info['height'])} got {(_res.get('width'), _res.get('height'))}")
+t('dup_image_delete', send({'cmds': ["_t_dup.delete()"]}))
 
 print()
 print(f"=== TOTAL: {passed}/{passed+failed} PASSED ===")
