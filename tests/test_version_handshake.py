@@ -63,5 +63,33 @@ check("newer plugin asks to update the server (numeric, not string, comparison)"
 s = server.version_status("garbage")
 check("unparseable version still warns", not s["version_ok"] and "version_warning" in s, str(s))
 
+
+# check_server() with a fake connection returning a canned get_gimp_info response.
+def fake_connection(response):
+    class FakeConnection:
+        def __init__(self, host, port):
+            pass
+
+        def connect(self):
+            pass
+
+        def send_command(self, command_type, params=None):
+            return response
+
+    return FakeConnection
+
+
+server.GimpConnection = fake_connection(
+    {"status": "success", "results": {"mcp_plugin_version": "0.4.0",
+                                      "version": {"version_method": "3.2.8"}}})
+s = server.check_server(None)
+check("check_server reports a matching plugin",
+      s["connected"] and s["version_ok"] and s["gimp_version"] == "3.2.8", str(s))
+
+server.GimpConnection = fake_connection({"status": "error", "error": "boom"})
+s = server.check_server(None)
+check("check_server reports a get_gimp_info error, not an outdated plugin",
+      s["connected"] and "boom" in s.get("error", "") and "version_warning" not in s, str(s))
+
 print(f"\n{len(failures)} failure(s)")
 sys.exit(1 if failures else 0)

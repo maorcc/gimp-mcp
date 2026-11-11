@@ -43,6 +43,7 @@ INSTALL_DOCS = "https://github.com/gimp-mcp/gimp-mcp#2-install-the-gimp-plugin"
 
 
 def _parse_version(value):
+    """Turn "1.2.3" into (1, 2, 3) so versions compare numerically; None if not parseable."""
     try:
         return tuple(int(part) for part in str(value).split("."))
     except ValueError:
@@ -168,7 +169,8 @@ def check_server(ctx: Context) -> dict:
     - gimp_version: if connected successfully
     - plugin_version / server_version / version_ok: whether the GIMP plugin matches this server
     - version_warning: present when they don't match; pass it on to the user
-    - error: description if not connected
+    - error: description if not connected, or if GIMP is reachable but get_gimp_info failed
+      (connected stays true and no version check is done)
 
     Use this before any other operation to verify the GIMP plugin is running.
     If not connected, open GIMP and run Tools > MCP > Start MCP Server.
@@ -177,17 +179,26 @@ def check_server(ctx: Context) -> dict:
         test_conn = GimpConnection(GIMP_HOST, GIMP_PORT)
         test_conn.connect()
         result = test_conn.send_command("get_gimp_info")
-        results = result.get("results", {})
-        version = results.get("version", {}).get("version_method", "unknown")
+    except Exception as e:
+        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
+    if result.get("status") != "success":
+        # The plugin answered, so it's reachable, but without info there's no version to
+        # compare. Report the error rather than a misleading "plugin is outdated" warning.
         return {
             "connected": True,
             "host": GIMP_HOST,
             "port": GIMP_PORT,
-            "gimp_version": version,
-            **version_status(results.get("mcp_plugin_version")),
+            "error": f"get_gimp_info failed: {result.get('error', 'Unknown error')}",
         }
-    except Exception as e:
-        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
+    results = result.get("results", {})
+    version = results.get("version", {}).get("version_method", "unknown")
+    return {
+        "connected": True,
+        "host": GIMP_HOST,
+        "port": GIMP_PORT,
+        "gimp_version": version,
+        **version_status(results.get("mcp_plugin_version")),
+    }
 
 
 @mcp.tool()
