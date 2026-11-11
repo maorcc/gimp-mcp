@@ -153,19 +153,45 @@ cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
 _BLACK = [0, 0, 0]
 
 
+def _read_context():
+    r = cmd('exec', {'args': ['python-fu-exec', [
+        'print(Gimp.context_get_opacity(), Gimp.context_get_paint_mode().value_nick)',
+    ]]})
+    try:
+        opacity, mode = r['results'][0].split()
+        return float(opacity), mode
+    except (KeyError, IndexError, ValueError):
+        return None
+
+
 def _context(opacity, mode):
-    return cmd('exec', {'args': ['python-fu-exec', [
+    """Set opacity and paint mode (and a solid line), and confirm they took.
+
+    If the setup silently failed, every check below would run in a plain
+    context and pass without testing anything, so stop the suite instead.
+    """
+    r = cmd('exec', {'args': ['python-fu-exec', [
         f'Gimp.context_set_opacity({opacity})',
         f'Gimp.context_set_paint_mode(Gimp.LayerMode.{mode})',
+        'Gimp.context_set_line_dash_pattern([])',  # a leftover dash could leave a gap at a sampled stroke pixel
     ]]})
+    got = _read_context()
+    if r.get('status') != 'success' or got != (opacity, mode.lower()):
+        print(f"Context setup failed: wanted {(opacity, mode.lower())}, got {got}: {r.get('error', '')}",
+              file=sys.stderr)
+        sys.exit(1)
 
 
-def _paint_check(name, tool, params, x, y, layer_name=None):
+def _paint_check(name, tool, params, x, y, layer_name=None, select=None):
     _context(100.0, 'NORMAL')
     cmd('select_none', {'image_index': 0})
-    cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})
+    cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})  # so a black pixel can only come from the tool
+    if select:
+        cmd('select_rectangle', dict(select, image_index=0))
     _context(50.0, 'DIFFERENCE')
     t(name, cmd(tool, dict(params, image_index=0)))
+    _after = _read_context()
+    chk(name + '_restores_context', _after == (50.0, 'difference'), _after)
     _context(100.0, 'NORMAL')
     q = {'image_index': 0, 'x': x, 'y': y}
     if layer_name:
@@ -177,14 +203,10 @@ def _paint_check(name, tool, params, x, y, layer_name=None):
 _paint_check('ctx_fill_layer',     'fill_layer',     {'color': '#000000'}, 100, 100)
 _paint_check('ctx_fill_rectangle', 'fill_rectangle', {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000'}, 100, 100)
 _paint_check('ctx_fill_ellipse',   'fill_ellipse',   {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000'}, 100, 100)
-cmd('select_rectangle', {'image_index': 0, 'x': 50, 'y': 50, 'width': 100, 'height': 100})
-_context(50.0, 'DIFFERENCE')
-t('ctx_fill_selection', cmd('fill_selection', {'image_index': 0, 'fill_type': 'foreground', 'color': '#000000'}))
-_context(100.0, 'NORMAL')
-_p = cmd('get_pixel_color', {'image_index': 0, 'x': 100, 'y': 100}).get('results', {})
-chk('ctx_fill_selection_solid', _p.get('color_rgb') == _BLACK, _p)
+_paint_check('ctx_fill_selection', 'fill_selection', {'fill_type': 'foreground', 'color': '#000000'}, 100, 100,
+             select={'x': 50, 'y': 50, 'width': 100, 'height': 100})
 cmd('select_none', {'image_index': 0})
-_paint_check('ctx_draw_line',      'draw_line',      {'x1': 10, 'y1': 100, 'x2': 190, 'y2': 100, 'color': '#000000', 'width': 6}, 100, 100)
+_paint_check('ctx_draw_line',     'draw_line',      {'x1': 10, 'y1': 100, 'x2': 190, 'y2': 100, 'color': '#000000', 'width': 6}, 100, 100)
 _paint_check('ctx_draw_rectangle', 'draw_rectangle', {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000', 'line_width': 6.0}, 50, 100)
 _paint_check('ctx_draw_ellipse',   'draw_ellipse',   {'x': 50, 'y': 50, 'width': 100, 'height': 100, 'color': '#000000', 'line_width': 6.0}, 50, 100)
 _paint_check('ctx_create_layer',   'create_layer',   {'name': 'CtxLayer', 'fill': '#000000'}, 100, 100, layer_name='CtxLayer')
