@@ -8,6 +8,7 @@
 Run with the project environment (needs the mcp package): uv run tests/test_version_handshake.py
 Exits 0 on pass, 1 on fail.
 """
+import copy
 import os
 import re
 import sys
@@ -103,7 +104,7 @@ check("check_server reports a get_gimp_info error, not an outdated plugin",
 # get_gimp_info() adds the same version fields to the plugin's info and keeps the rest.
 gimp_details = {"version": {"version_method": "3.2.8"}, "directories": {"user_directory": "/tmp/gimp"}}
 server.get_gimp_connection = lambda: fake_connection(
-    {"status": "success", "results": {"mcp_plugin_version": "0.3.9", **gimp_details}})(None, None)
+    {"status": "success", "results": {"mcp_plugin_version": "0.3.9", **copy.deepcopy(gimp_details)}})(None, None)
 s = server.get_gimp_info(None)
 check("get_gimp_info warns about an older plugin",
       s.get("version_ok") is False and "Update the plugin" in s.get("version_warning", "")
