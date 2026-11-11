@@ -1867,13 +1867,19 @@ class MCPPlugin(Gimp.PlugIn):
             layer = Gimp.Layer.new(image, name, width, height, layer_type, 100, Gimp.LayerMode.NORMAL)
             image.insert_layer(layer, None, 0)
 
+            # Drawable.fill ignores the context's opacity and paint mode, which
+            # an earlier call may have changed; edit_fill would blend with them.
             if fill.lower() == "transparent":
                 layer.add_alpha()
-                Gimp.Drawable.edit_fill(layer, Gimp.FillType.TRANSPARENT)
+                layer.fill(Gimp.FillType.TRANSPARENT)
             else:
                 bg_color = Gegl.Color.new(fill)
-                Gimp.context_set_background(bg_color)
-                Gimp.Drawable.edit_fill(layer, Gimp.FillType.BACKGROUND)
+                Gimp.context_push()
+                try:
+                    Gimp.context_set_background(bg_color)
+                    layer.fill(Gimp.FillType.BACKGROUND)
+                finally:
+                    Gimp.context_pop()
 
             display_opened = self._create_display(image)
 
