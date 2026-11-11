@@ -84,6 +84,20 @@ if os.name != "nt":
             found = server.find_gimp_config_dir()
         check("GIMP3_DIRECTORY overrides the search", found == home / "custom", str(found))
 
+    # A relative GIMP3_DIRECTORY is under the home dir, as in GIMP, whatever the cwd is.
+    with fake_home() as home:
+        cwd = os.getcwd()
+        found = []
+        try:
+            for d in (home, Path(tempfile.gettempdir())):
+                os.chdir(d)
+                with mock.patch.dict(os.environ, {"GIMP3_DIRECTORY": "custom/3.2"}):
+                    found.append(server.find_gimp_config_dir())
+        finally:
+            os.chdir(cwd)
+        check("relative GIMP3_DIRECTORY resolves under home, not the cwd",
+              found == [home / "custom/3.2"] * 2, str(found))
+
     # Fresh install: creates plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py, executable, same content.
     with fake_home() as home:
         gimp_dir = home / ".config/GIMP/3.2"
@@ -106,6 +120,21 @@ if os.name != "nt":
               code == 0 and "replacing version unknown" in out
               and target.read_bytes() == server.PLUGIN_SOURCE.read_bytes(), out)
 
+        # A copy that fails partway leaves the installed plugin intact and no temp file behind.
+        def failing_copy(src, dst):
+            Path(dst).write_text("partial")
+            raise OSError("No space left on device")
+        target.write_text("# old plugin\n")
+        with mock.patch.object(server.shutil, "copyfile", failing_copy):
+            try:
+                server.install_plugin(gimp_dir)
+                raised = False
+            except OSError:
+                raised = True
+        leftovers = [p.name for p in target.parent.iterdir() if p != target]
+        check("failed copy keeps the old plugin and cleans up",
+              raised and target.read_text() == "# old plugin\n" and not leftovers, str(leftovers))
+
     with fake_home() as home:
         code, _, err = run_cli()
         check("no GIMP 3 dir: fails with a hint", code == 1 and "--gimp-dir" in err, err)
@@ -114,6 +143,25 @@ if os.name != "nt":
         code, out, _ = run_cli("--gimp-dir", str(explicit))
         check("--gimp-dir installs there even if nothing was found",
               code == 0 and (explicit / "plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py").is_file(), out)
+
+# Windows: %APPDATA%\\GIMP, plus MSIX (Microsoft Store) packages under %LOCALAPPDATA%.
+# Uses plain paths, so it runs on any OS.
+with fake_home() as home:
+    appdata, local = home / "AppData/Roaming", home / "AppData/Local"
+    msix = local / "Packages/GIMP.GIMP_3.2.2.0_x64__abc123/LocalCache/Roaming/GIMP"
+    (msix / "3.2").mkdir(parents=True)
+    (local / "Packages/Other.App_1.0_x64__xyz/LocalCache/Roaming").mkdir(parents=True)
+    with mock.patch.dict(os.environ, {"APPDATA": str(appdata), "LOCALAPPDATA": str(local)}):
+        bases = server._windows_config_bases()
+        check("Windows bases: APPDATA first, then MSIX GIMP folders",
+              bases == [appdata / "GIMP", msix], str(bases))
+        with mock.patch.object(server, "_gimp_config_bases", server._windows_config_bases):
+            found = server.find_gimp_config_dir()
+            check("finds the MSIX config dir when APPDATA has none", found == msix / "3.2", str(found))
+            (appdata / "GIMP/3.2").mkdir(parents=True)
+            found = server.find_gimp_config_dir()
+            check("standard APPDATA dir wins a version tie with MSIX",
+                  found == appdata / "GIMP/3.2", str(found))
 
 # The install command shown in version warnings matches how the server is running.
 with mock.patch.object(server, "_running_from_checkout", return_value=False):
