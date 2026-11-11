@@ -10,6 +10,7 @@ on:
     paths:
       - pyproject.toml
       - gimp_mcp_server.py
+      - gimp-mcp-plugin.py
       - docs/**
       - .github/workflows/publish.yml
 
@@ -35,7 +36,7 @@ jobs:
             exit 1
           fi
       - run: uv build
-      - name: Check the wheel runs and includes the docs
+      - name: Check the wheel runs and includes the docs and plugin
         # Run outside the checkout so the installed wheel is imported, not the repo's files.
         working-directory: ${{ runner.temp }}
         run: |
@@ -45,8 +46,11 @@ jobs:
           assert 'site-packages' in s.__file__, s.__file__
           assert s._read_doc('best_practices.md')
           assert s._read_doc('iterative_workflow.md')
+          assert s.PLUGIN_SOURCE.is_file(), s.PLUGIN_SOURCE
           print('wheel OK:', s.__file__)
           "
+          uvx --isolated --from "$wheel" gimp-mcp-plugin install-plugin --gimp-dir "$RUNNER_TEMP/GIMP/3.2"
+          cmp "$RUNNER_TEMP/GIMP/3.2/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py" "$GITHUB_WORKSPACE/gimp-mcp-plugin.py"
       - uses: actions/upload-artifact@v7
         with:
           name: dist

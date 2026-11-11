@@ -3,7 +3,11 @@
 # Adds: new_canvas, check_server, restart_server, no bitmap size restrictions
 
 from mcp.server.fastmcp import FastMCP, Context, Image
+import argparse
 import os
+import re
+import shutil
+import sys
 import socket
 import json
 import logging
@@ -40,7 +44,6 @@ GIMP_PORT = _port_from_env()
 # Must match PLUGIN_VERSION in gimp-mcp-plugin.py and version in pyproject.toml
 # (tests/test_version_handshake.py checks this).
 SERVER_VERSION = "0.1.0"
-INSTALL_DOCS = "https://github.com/gimp-mcp/gimp-mcp#2-install-the-gimp-plugin"
 
 
 def _parse_version(value):
@@ -66,8 +69,7 @@ def version_status(plugin_version):
     if status["version_ok"]:
         return status
     update_plugin = (
-        f"Update the plugin: copy gimp-mcp-plugin.py from this server's checkout into "
-        f"GIMP's plug-ins folder (see {INSTALL_DOCS}), then restart GIMP."
+        f"Update the plugin: run `{install_plugin_command()}`, then restart GIMP."
     )
     plugin, server = _parse_version(plugin_version), _parse_version(SERVER_VERSION)
     if plugin_version is None:
@@ -79,7 +81,7 @@ def version_status(plugin_version):
         status["version_warning"] = (
             f"The MCP server (v{SERVER_VERSION}) is older than the GIMP plugin "
             f"(v{plugin_version}), so some tools may fail. Update the server "
-            f"(git pull in the gimp-mcp checkout) and restart your MCP client."
+            f"({_update_server_hint()}) and restart your MCP client."
         )
     else:
         status["version_warning"] = (
@@ -2852,8 +2854,141 @@ def get_histogram(
         raise Exception(f"get_histogram failed: {e}")
 
 
-def main():
+# ─────────────────────────────────────────────────────────────────────────────
+# Plugin installation (`gimp-mcp-plugin install-plugin`)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PLUGIN_NAME = "gimp-mcp-plugin"
+# Shipped next to this module, both in a git checkout and in the installed package
+# (pyproject.toml lists it as an extra module).
+PLUGIN_SOURCE = Path(__file__).resolve().parent / f"{PLUGIN_NAME}.py"
+
+
+def _running_from_checkout():
+    """True when running from a source checkout rather than an installed package."""
+    return not {"site-packages", "dist-packages"} & set(Path(__file__).resolve().parts)
+
+
+def install_plugin_command():
+    """The command that installs the plugin matching this server's version."""
+    if _running_from_checkout():
+        return f'uv run --directory "{Path(__file__).resolve().parent}" gimp_mcp_server.py install-plugin'
+    return f"uvx gimp-mcp-plugin@{SERVER_VERSION} install-plugin"
+
+
+def _update_server_hint():
+    if _running_from_checkout():
+        return "git pull in the gimp-mcp checkout"
+    return "use gimp-mcp-plugin@latest in your MCP client config"
+
+
+def _gimp_config_bases():
+    """Directories that hold GIMP's per-version config dirs (3.0, 3.2, ...) on this platform."""
+    home = Path.home()
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        return [Path(appdata) / "GIMP"] if appdata else []
+    if sys.platform == "darwin":
+        return [home / "Library" / "Application Support" / "GIMP"]
+    xdg = os.environ.get("XDG_CONFIG_HOME") or str(home / ".config")
+    return [
+        Path(xdg) / "GIMP",
+        home / "snap" / "gimp" / "current" / ".config" / "GIMP",  # Snap
+        home / ".var" / "app" / "org.gimp.GIMP" / "config" / "GIMP",  # Flatpak
+    ]
+
+
+def find_gimp_config_dir():
+    """Return the newest GIMP 3.x per-user config dir, or None if GIMP 3 was never started.
+
+    GIMP creates a new dir per minor version (3.0, 3.2, ...); GIMP3_DIRECTORY overrides it.
+    """
+    override = os.environ.get("GIMP3_DIRECTORY")
+    if override:
+        return Path(override).expanduser()
+    candidates = []
+    for base in _gimp_config_bases():
+        if not base.is_dir():
+            continue
+        for child in base.iterdir():
+            version = _parse_version(child.name)
+            if child.is_dir() and version and version[0] == 3:
+                candidates.append((version, child))
+    return max(candidates)[1] if candidates else None
+
+
+def _file_plugin_version(path):
+    """PLUGIN_VERSION from a plugin file, "unknown" for one predating it, None if missing."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    match = re.search(r'^PLUGIN_VERSION = "([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else "unknown"
+
+
+def install_plugin(gimp_dir=None, dry_run=False):
+    """Copy the bundled plugin into GIMP's plug-ins folder. Returns a summary dict."""
+    gimp_dir = Path(gimp_dir).expanduser() if gimp_dir else find_gimp_config_dir()
+    if gimp_dir is None:
+        raise RuntimeError(
+            "No GIMP 3 config folder found. Start GIMP once so it creates one, or pass "
+            "--gimp-dir with the folder shown in GIMP's Edit > Preferences > Folders "
+            "(the parent of its plug-ins folder, e.g. ~/.config/GIMP/3.2)."
+        )
+    if not PLUGIN_SOURCE.is_file():
+        raise RuntimeError(f"Bundled plugin not found at {PLUGIN_SOURCE}")
+    target = gimp_dir / "plug-ins" / PLUGIN_NAME / f"{PLUGIN_NAME}.py"
+    result = {
+        "gimp_dir": str(gimp_dir),
+        "target": str(target),
+        "previous_version": _file_plugin_version(target),
+        "new_version": _file_plugin_version(PLUGIN_SOURCE),
+        "dry_run": dry_run,
+    }
+    if not dry_run:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(PLUGIN_SOURCE, target)
+        if os.name != "nt":
+            target.chmod(0o755)  # GIMP only runs plug-ins that are executable
+    return result
+
+
+def _install_plugin_cli(argv):
+    parser = argparse.ArgumentParser(
+        prog="gimp-mcp-plugin install-plugin",
+        description="Install or update the GIMP MCP plugin into GIMP 3's plug-ins folder.",
+    )
+    parser.add_argument("--gimp-dir", help="GIMP config folder, e.g. ~/.config/GIMP/3.2 "
+                        "(default: the newest GIMP 3.x folder found)")
+    parser.add_argument("--dry-run", action="store_true", help="show what would be done")
+    args = parser.parse_args(argv)
+    try:
+        r = install_plugin(args.gimp_dir, args.dry_run)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    previous = r["previous_version"]
+    change = "new install" if previous is None else f"replacing version {previous}"
+    verb = "Would install" if r["dry_run"] else "Installed"
+    print(f"{verb} GIMP MCP plugin {r['new_version']} ({change})")
+    print(f"  into {r['target']}")
+    if not r["dry_run"]:
+        print("Restart GIMP to load it, then start it from Tools > MCP > Start MCP Server.")
+    return 0
+
+
+def main(argv=None):
+    """Run the MCP server, or `install-plugin` to install the GIMP plugin."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "install-plugin":
+        sys.exit(_install_plugin_cli(argv[1:]))
+    if argv:
+        print("usage: gimp-mcp-plugin [install-plugin [--gimp-dir DIR] [--dry-run]]",
+              file=sys.stderr)
+        sys.exit(2)
     mcp.run()
+
 
 if __name__ == "__main__":
     main()
