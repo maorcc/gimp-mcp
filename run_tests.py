@@ -153,6 +153,70 @@ t('noise',         cmd('apply_noise',         {'image_index': 0}))
 t('drop_shadow',   cmd('apply_drop_shadow',   {'image_index': 0}))
 
 print()
+print("=== Cat 9: Filters change pixels ===")
+# The filter tools above only check status, and _apply_gegl_filter used to
+# report success without applying anything. Each check here starts from a
+# known image and asserts a change that only the filter itself can make.
+cmd('new_canvas', {'width': 200, 'height': 200, 'fill': 'white'})
+
+
+def px(x, y):
+    return cmd('get_pixel_color', {'image_index': 0, 'x': x, 'y': y}).get('results', {}).get('color_rgb')
+
+
+def std_dev():
+    return cmd('get_histogram', {'image_index': 0, 'channel': 'value'}).get('results', {}).get('std_dev')
+
+
+def half_black():
+    """White canvas with columns 0-149 black."""
+    cmd('select_none', {'image_index': 0})
+    cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})
+    cmd('fill_rectangle', {'image_index': 0, 'x': 0, 'y': 0, 'width': 150, 'height': 200, 'color': '#000000'})
+
+
+# Pixelate: the 100px block over columns 100-199 is half black, half white.
+half_black()
+t('f_pixelate', cmd('apply_pixelate', {'image_index': 0, 'block_size': 100}))
+_p = px(120, 50)
+chk('f_pixelate_blends', _p is not None and 0 < _p[0] < 255, _p)
+
+# Gaussian blur: 5px left of the black/white edge picks up some white.
+half_black()
+t('f_gaussian_blur', cmd('apply_gaussian_blur', {'image_index': 0, 'radius': 10.0}))
+_p = px(145, 50)
+chk('f_gaussian_blur_spreads', _p is not None and _p[0] > 0, _p)
+
+# Emboss: a flat white area is shaded to a gray, not left white.
+cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})
+t('f_emboss', cmd('apply_emboss', {'image_index': 0}))
+_p = px(100, 100)
+chk('f_emboss_shades', _p is not None and _p[0] < 255, _p)
+
+# Vignette: corners darken while the center stays white.
+cmd('fill_layer', {'image_index': 0, 'color': '#ffffff'})
+t('f_vignette', cmd('apply_vignette', {'image_index': 0}))
+_c, _m = px(0, 0), px(100, 100)
+chk('f_vignette_darkens_corner', _c is not None and _m is not None and _c[0] < _m[0], {'corner': _c, 'center': _m})
+
+# Noise, then denoise: a flat gray gains variation, then loses some of it.
+cmd('fill_layer', {'image_index': 0, 'color': '#808080'})
+t('f_noise', cmd('apply_noise', {'image_index': 0, 'amount': 0.5}))
+_noisy = std_dev()
+chk('f_noise_adds_variation', isinstance(_noisy, (int, float)) and _noisy > 1.0, _noisy)
+t('f_denoise', cmd('denoise', {'image_index': 0, 'strength': 100}))
+_clean = std_dev()
+chk('f_denoise_reduces_variation',
+    isinstance(_clean, (int, float)) and isinstance(_noisy, (int, float)) and _clean < _noisy,
+    {'before': _noisy, 'after': _clean})
+
+# Bad arguments must now fail instead of reporting success.
+_r = cmd('apply_vignette', {'image_index': 0, 'softness': 3.0})
+chk('f_vignette_rejects_out_of_range', _r.get('status') == 'error', _r.get('error'))
+_r = cmd('apply_vignette', {'image_index': 0, 'shape': 'hexagon'})
+chk('f_vignette_rejects_bad_shape', _r.get('status') == 'error', _r.get('error'))
+
+print()
 print(f"=== TOTAL: {passed}/{passed+failed} PASSED ===")
 if failures:
     print("Failures:")
