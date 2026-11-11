@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import socket
+import tempfile
 import json
 import logging
 import base64
@@ -2877,6 +2878,7 @@ def install_plugin_command():
 
 
 def _update_server_hint():
+    """How to update the server, for the version warning."""
     if _running_from_checkout():
         return "git pull in the gimp-mcp checkout"
     return "use gimp-mcp-plugin@latest in your MCP client config"
@@ -2886,8 +2888,7 @@ def _gimp_config_bases():
     """Directories that hold GIMP's per-version config dirs (3.0, 3.2, ...) on this platform."""
     home = Path.home()
     if os.name == "nt":
-        appdata = os.environ.get("APPDATA")
-        return [Path(appdata) / "GIMP"] if appdata else []
+        return _windows_config_bases()
     if sys.platform == "darwin":
         return [home / "Library" / "Application Support" / "GIMP"]
     xdg = os.environ.get("XDG_CONFIG_HOME") or str(home / ".config")
@@ -2898,23 +2899,42 @@ def _gimp_config_bases():
     ]
 
 
+def _windows_config_bases():
+    """%APPDATA%\\GIMP, then the GIMP folders of MSIX (Microsoft Store) packages.
+
+    An MSIX GIMP whose %APPDATA%\\GIMP\\<ver> folder doesn't exist keeps its config in
+    %LOCALAPPDATA%\\Packages\\<package>\\LocalCache\\Roaming\\GIMP (see GIMP's gimpenv.c).
+    """
+    bases = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        bases.append(Path(appdata) / "GIMP")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        bases += sorted((Path(local) / "Packages").glob("*/LocalCache/Roaming/GIMP"))
+    return bases
+
+
 def find_gimp_config_dir():
     """Return the newest GIMP 3.x per-user config dir, or None if GIMP 3 was never started.
 
     GIMP creates a new dir per minor version (3.0, 3.2, ...); GIMP3_DIRECTORY overrides it.
+    On a version tie, the earlier base in _gimp_config_bases() wins.
     """
     override = os.environ.get("GIMP3_DIRECTORY")
     if override:
-        return Path(override).expanduser()
+        path = Path(override).expanduser()
+        # GIMP resolves a relative GIMP3_DIRECTORY against the home dir, not the cwd.
+        return path if path.is_absolute() else Path.home() / path
     candidates = []
-    for base in _gimp_config_bases():
+    for priority, base in enumerate(_gimp_config_bases()):
         if not base.is_dir():
             continue
         for child in base.iterdir():
             version = _parse_version(child.name)
             if child.is_dir() and version and version[0] == 3:
-                candidates.append((version, child))
-    return max(candidates)[1] if candidates else None
+                candidates.append((version, -priority, child))
+    return max(candidates)[2] if candidates else None
 
 
 def _file_plugin_version(path):
@@ -2947,14 +2967,32 @@ def install_plugin(gimp_dir=None, dry_run=False):
         "dry_run": dry_run,
     }
     if not dry_run:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(PLUGIN_SOURCE, target)
-        if os.name != "nt":
-            target.chmod(0o755)  # GIMP only runs plug-ins that are executable
+        _copy_plugin(target)
     return result
 
 
+def _copy_plugin(target):
+    """Copy the bundled plugin to target, replacing it only once the new copy is complete.
+
+    Writing to a temp file first means a failed copy (e.g. disk full) leaves any
+    installed plugin intact instead of truncated.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        shutil.copyfile(PLUGIN_SOURCE, tmp)
+        if os.name != "nt":
+            tmp.chmod(0o755)  # GIMP only runs plug-ins that are executable
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _install_plugin_cli(argv):
+    """`install-plugin` subcommand: parse arguments, install, print a summary. Returns the exit code."""
     parser = argparse.ArgumentParser(
         prog="gimp-mcp-plugin install-plugin",
         description="Install or update the GIMP MCP plugin into GIMP 3's plug-ins folder.",
