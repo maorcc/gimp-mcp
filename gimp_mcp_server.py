@@ -11,6 +11,7 @@ import base64
 import traceback
 import time
 from pathlib import Path
+from importlib import resources
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("GimpMCPServer")
@@ -104,6 +105,16 @@ def reset_gimp_connection():
     if _gimp_connection:
         _gimp_connection.disconnect()
     _gimp_connection = None
+
+def _read_doc(name):
+    """Read a guidance doc from docs/ in a checkout, or from the installed package.
+
+    pyproject.toml ships docs/*.md in the wheel as the gimp_mcp_docs package.
+    """
+    local = Path(__file__).parent / "docs" / name
+    if local.is_file():
+        return local.read_text(encoding="utf-8")
+    return resources.files("gimp_mcp_docs").joinpath(name).read_text(encoding="utf-8")
 
 # MCP server
 mcp = FastMCP("GimpMCP", instructions="GIMP integration through MCP — with new_canvas, check_server, restart_server")
@@ -515,8 +526,7 @@ def gimp_best_practices() -> str:
     This prompt provides critical DO/DON'T patterns that help AI assistants
     and users avoid common mistakes when working with GIMP through MCP.
     """
-    docs_path = Path(__file__).parent / "docs" / "best_practices.md"
-    return docs_path.read_text()
+    return _read_doc("best_practices.md")
 
 @mcp.prompt(
     description="Iterative workflow guidance for building complex images with proper validation and layer management"
@@ -531,8 +541,7 @@ def gimp_iterative_workflow() -> str:
     - Fix problems properly instead of painting over them
     - Leverage GIMP's professional features for clean, organized work
     """
-    docs_path = Path(__file__).parent / "docs" / "iterative_workflow.md"
-    return docs_path.read_text()
+    return _read_doc("iterative_workflow.md")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY 1 — File Operations
