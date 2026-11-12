@@ -961,7 +961,7 @@ class MCPPlugin(Gimp.PlugIn):
                 working_image.insert_layer(new_layer, None, 0)
                 
                 # Copy and paste the selection
-                Gimp.edit_copy([orig_layers[0]])
+                Gimp.edit_copy_visible(original_image)
                 floating_sel = Gimp.edit_paste(new_layer, True)[0]
                 Gimp.floating_sel_anchor(floating_sel)
                 
