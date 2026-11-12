@@ -39,7 +39,9 @@ GIMP config dir; a non-default port must also be set as `GIMP_MCP_PORT` for the 
 The plugin and server versions must match exactly (`check_server` / `get_gimp_info` report a
 mismatch with the fix command). A release bumps `pyproject.toml` `version`, `SERVER_VERSION` in
 `gimp_mcp_server.py` and `PLUGIN_VERSION` in `gimp-mcp-plugin.py` together
-(`tests/test_version_handshake.py` checks this).
+(`tests/test_version_handshake.py` checks this). It also renames `## [Unreleased]` in
+`CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, adds a fresh empty `[Unreleased]` section, and
+updates the compare links at the bottom. User-facing PRs add their entry under `[Unreleased]`.
 
 ### MCP Server Configuration
 Add to Claude Desktop config (`~/.config/Claude/claude_desktop_config.json`):
@@ -134,3 +136,4 @@ Gimp.displays_flush()
 - `docs/iterative_workflow.md`: Professional iterative workflow guidance for building complex images with layer management and validation
 - `GIMP_MCP_PROTOCOL.md`: Detailed API documentation and examples
 - `README.md`: Installation and setup instructions
+- `CHANGELOG.md`: User-facing changes per release
