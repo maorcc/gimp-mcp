@@ -4,15 +4,21 @@ All notable changes to `gimp-mcp-plugin` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-The plugin and the MCP server must run the same version. After upgrading, reinstall the
-plugin with `uvx gimp-mcp-plugin@latest install-plugin` and restart GIMP.
+The plugin and the MCP server must run exactly the same version. To upgrade, restart your
+MCP client so it starts the new server, then run `uvx gimp-mcp-plugin@latest install-plugin`
+and restart GIMP. If you pin the server to a version, install that version's plugin with
+`uvx gimp-mcp-plugin@X.Y.Z install-plugin`; from a checkout, run
+`uv run gimp_mcp_server.py install-plugin`. `check_server` and `get_gimp_info` print the
+right command when the versions differ.
 
 ## [Unreleased]
 
 ### Changed
 - Tools run on a single worker thread off the server's event loop, in the order they were
   sent. The server keeps answering pings and cancellations while GIMP runs a long
-  command (#106).
+  command. A cancelled command that is still waiting never runs, but one GIMP has already
+  started finishes in the background, so check the image before retrying it, or the edit
+  may be applied twice (#106).
 
 ## [0.2.1] - 2026-11-11
 
