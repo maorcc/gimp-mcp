@@ -35,6 +35,7 @@ upgrading GIMP; the active path is shown in **Edit > Preferences > Folders > Plu
 Then start it from **Tools > MCP > Start MCP Server** in GIMP, or enable autostart (and set the
 port) in **Tools > MCP > MCP Server Settings...**. Settings are stored in `gimp-mcp.json` in the
 GIMP config dir; a non-default port must also be set as `GIMP_MCP_PORT` for the MCP server.
+The MCP server waits up to 300 s for GIMP per command; `GIMP_MCP_TIMEOUT` (seconds) changes that.
 
 The plugin and server versions must match exactly (`check_server` / `get_gimp_info` report a
 mismatch with the fix command). A release bumps `pyproject.toml` `version`, `SERVER_VERSION` in

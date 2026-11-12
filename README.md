@@ -127,6 +127,15 @@ in your MCP client config so the MCP server connects to the same port:
 Settings are saved to `gimp-mcp.json` in GIMP's per-user config folder (e.g.
 `~/.config/GIMP/3.2/gimp-mcp.json`). Port changes apply the next time the server starts.
 
+#### Timeout for long commands
+
+The MCP server waits up to 300 seconds for GIMP to finish each command. For heavier work
+(large or 16-bit images, slow filters), set `GIMP_MCP_TIMEOUT` (in seconds) in your MCP
+client config, the same way as `GIMP_MCP_PORT` above, e.g. `"GIMP_MCP_TIMEOUT": "900"`.
+`check_server` reports the timeout in effect. When a command times out, GIMP may still be
+running it, so check the image before retrying. Your MCP client may have its own tool
+timeout (in Claude Code, `MCP_TOOL_TIMEOUT`, in milliseconds); raise it too if it's shorter.
+
 ### 3. Configure Your MCP Client
 
 `gimp-mcp-plugin@latest` makes `uvx` check PyPI for a new release each time your client starts the server.
@@ -461,6 +470,10 @@ GIMP 3.x introduced breaking API changes from GIMP 2.x. Key fixes included in th
 - Start the MCP server: **Tools > MCP > Start MCP Server**, or enable autostart in **Tools > MCP > MCP Server Settings...**
 - If you changed the port in GIMP, set `GIMP_MCP_PORT` to the same value in your MCP client config
 - Check port 9877 (or your custom port) is not blocked by firewall
+
+### "GIMP did not reply within 300 s"
+- The command took longer than the MCP server waits. Raise `GIMP_MCP_TIMEOUT` (seconds) in your MCP client config; see [Timeout for long commands](#timeout-for-long-commands)
+- GIMP may still be running the command: check the image before retrying
 
 ### Plugin Not Visible in GIMP
 - Look under **Tools > MCP** (the plugin adds an `MCP` submenu, not a top-level `Tools` entry)

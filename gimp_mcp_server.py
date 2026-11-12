@@ -47,6 +47,27 @@ def _port_from_env():
 
 GIMP_PORT = _port_from_env()
 
+DEFAULT_GIMP_TIMEOUT = 300.0
+
+
+def _timeout_from_env():
+    """GIMP_MCP_TIMEOUT: seconds to wait for GIMP to reply to one command."""
+    value = os.environ.get("GIMP_MCP_TIMEOUT", "").strip()
+    if not value:
+        return DEFAULT_GIMP_TIMEOUT
+    try:
+        timeout = float(value)
+    except ValueError:
+        timeout = 0.0
+    # Rejects nan and inf too: they make settimeout() fail or wait forever.
+    if not 0 < timeout < float("inf"):
+        logger.warning(f"Ignoring invalid GIMP_MCP_TIMEOUT={value!r}; using {DEFAULT_GIMP_TIMEOUT:g}")
+        return DEFAULT_GIMP_TIMEOUT
+    return timeout
+
+
+GIMP_TIMEOUT = _timeout_from_env()
+
 # Must match PLUGIN_VERSION in gimp-mcp-plugin.py and version in pyproject.toml
 # (tests/test_version_handshake.py checks this).
 SERVER_VERSION = "0.2.1"
@@ -110,7 +131,7 @@ class GimpConnection:
             self.sock.settimeout(10)
             self.sock.connect((self.host, self.port))
             # 10s was too short for flattening/scaling multi-layer PSDs and 16-bit renders
-            self.sock.settimeout(300)
+            self.sock.settimeout(GIMP_TIMEOUT)
             logger.info(f"Connected to GIMP at {self.host}:{self.port}")
         except Exception as e:
             self.sock = None
@@ -143,6 +164,13 @@ class GimpConnection:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
             return json.loads(response_data.decode('utf-8'))
+        except TimeoutError:
+            logger.error(f"GIMP did not reply within {GIMP_TIMEOUT:g} s")
+            raise Exception(
+                f"GIMP did not reply within {GIMP_TIMEOUT:g} s. GIMP may still be running the "
+                f"command, so check the image before retrying. For longer commands, set "
+                f"GIMP_MCP_TIMEOUT (seconds) in your MCP client config."
+            )
         except Exception as e:
             logger.error(f"Communication error: {e}")
             raise Exception(f"Error communicating with GIMP: {e}")
@@ -250,6 +278,7 @@ def check_server(ctx: Context) -> dict:
     Returns a status dict:
     - connected: bool
     - host / port: where it tried
+    - timeout_seconds: how long each command waits for GIMP (GIMP_MCP_TIMEOUT)
     - gimp_version: if connected successfully
     - plugin_version / server_version / version_ok: whether the GIMP plugin matches this server
     - version_warning: present when they don't match; pass it on to the user
@@ -264,7 +293,8 @@ def check_server(ctx: Context) -> dict:
         test_conn.connect()
         result = test_conn.send_command("get_gimp_info")
     except Exception as e:
-        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
+        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT,
+                "timeout_seconds": GIMP_TIMEOUT, "error": str(e)}
     if result.get("status") != "success":
         # The plugin answered, so it's reachable, but without info there's no version to
         # compare. Report the error rather than a misleading "plugin is outdated" warning.
@@ -272,6 +302,7 @@ def check_server(ctx: Context) -> dict:
             "connected": True,
             "host": GIMP_HOST,
             "port": GIMP_PORT,
+            "timeout_seconds": GIMP_TIMEOUT,
             "error": f"get_gimp_info failed: {result.get('error', 'Unknown error')}",
         }
     results = result.get("results", {})
@@ -280,6 +311,7 @@ def check_server(ctx: Context) -> dict:
         "connected": True,
         "host": GIMP_HOST,
         "port": GIMP_PORT,
+        "timeout_seconds": GIMP_TIMEOUT,
         "gimp_version": version,
         **version_status(results.get("mcp_plugin_version")),
     }
@@ -462,6 +494,7 @@ def get_gimp_info(ctx: Context) -> dict:
     - Available plugins and procedures
     - System configuration
     - Runtime environment details
+    - timeout_seconds: how long each command waits for GIMP (GIMP_MCP_TIMEOUT)
 
     This information helps AI assistants provide better support and troubleshooting
     by understanding the specific GIMP setup they're working with.
@@ -478,6 +511,7 @@ def get_gimp_info(ctx: Context) -> dict:
         if result["status"] == "success":
             info = result["results"]
             info.update(version_status(info.get("mcp_plugin_version")))
+            info["timeout_seconds"] = GIMP_TIMEOUT
             return info
         else:
             raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
