@@ -13,6 +13,11 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+### Added
+- `GIMP_MCP_TIMEOUT` sets how many seconds the MCP server waits for GIMP to finish a
+  command (default 300). `check_server` and `get_gimp_info` report it as
+  `timeout_seconds`, and a timed-out command now says so and tells you how to raise it.
+
 ### Changed
 - Tools run on a single worker thread off the server's event loop, in the order they were
   sent. The server keeps answering pings and cancellations while GIMP runs a long
