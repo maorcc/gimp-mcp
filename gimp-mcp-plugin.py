@@ -35,7 +35,7 @@ VIGNETTE_SHAPES = ("circle", "square", "diamond", "horizontal", "vertical")  # g
 # Reported to the MCP server, which warns when it doesn't match its own version.
 # Keep in sync with SERVER_VERSION in gimp_mcp_server.py and version in pyproject.toml
 # (tests/test_version_handshake.py checks this).
-PLUGIN_VERSION = "0.2.1"
+PLUGIN_VERSION = "0.3.0"
 
 DEFAULT_PORT = 9877
 SETTINGS_FILE_NAME = "gimp-mcp.json"

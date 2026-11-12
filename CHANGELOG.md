@@ -13,10 +13,12 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-12
+
 ### Added
 - `GIMP_MCP_TIMEOUT` sets how many seconds the MCP server waits for GIMP to finish a
   command (default 300). `check_server` and `get_gimp_info` report it as
-  `timeout_seconds`, and a timed-out command now says so and tells you how to raise it.
+  `timeout_seconds`, and a timed-out command now says so and tells you how to raise it (#108).
 
 ### Changed
 - Tools run on a single worker thread off the server's event loop, in the order they were
@@ -69,7 +71,8 @@ First release on PyPI as `gimp-mcp-plugin` (#96).
 - `get_pixel_color` returns sRGB instead of linear values (#55).
 - The plugin no longer crashes after a client-side timeout (#82).
 
-[Unreleased]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gimp-mcp/gimp-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/gimp-mcp/gimp-mcp/releases/tag/v0.1.0
