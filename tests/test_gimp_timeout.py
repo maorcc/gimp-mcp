@@ -106,7 +106,8 @@ except Exception as e:
     error = str(e)
 elapsed = time.monotonic() - started
 check("silent GIMP raises an error", error is not None)
-check("the wait follows GIMP_TIMEOUT", elapsed < 1.5, f"{elapsed:.2f} s")
+check("the wait follows GIMP_TIMEOUT", server.GIMP_TIMEOUT * 0.9 <= elapsed < 1.5,
+      f"{elapsed:.2f} s")
 error = error or ""
 check("error names the timeout", "within 0.3 s" in error, error)
 check("error warns GIMP may still be running it", "may still be running" in error, error)
