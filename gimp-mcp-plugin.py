@@ -1092,7 +1092,7 @@ class MCPPlugin(Gimp.PlugIn):
                             # Some export procedures might not need drawable specification
                             pass
                     
-                    result = export_proc.run(export_config)
+                    result = self._run_pdb(export_proc, export_config)
                     print(f"Export result: {result}")
                     
                 except Exception as export_error:
@@ -1115,7 +1115,7 @@ class MCPPlugin(Gimp.PlugIn):
                                 save_config = save_proc.create_config()
                                 save_config.set_property('image', final_image)
                                 save_config.set_property('file', file_obj)
-                                save_result = save_proc.run(save_config)
+                                save_result = self._run_pdb(save_proc, save_config)
                                 print(f"PDB save result: {save_result}")
                             else:
                                 return {
@@ -1938,6 +1938,55 @@ class MCPPlugin(Gimp.PlugIn):
             raise RuntimeError(f"image_index {image_index} out of range (only {len(images)} images open)")
         return images[image_index]
 
+    def _lookup_pdb(self, name):
+        """Return the PDB procedure `name`, raise if GIMP doesn't have it.
+
+        For call sites with no alternative. Where a missing procedure has a
+        fallback (another API, a GEGL op), use lookup_procedure() directly.
+        """
+        proc = Gimp.get_pdb().lookup_procedure(name)
+        if proc is None:
+            raise RuntimeError(f"PDB procedure '{name}' not found")
+        return proc
+
+    def _run_pdb(self, proc, cfg):
+        """Run a PDB procedure, raise if it returns a non-SUCCESS status.
+
+        Gimp.Procedure.run() does not raise when GIMP rejects a call (locked
+        layer, layer group, invalid argument); it returns a Gimp.ValueArray whose
+        first value is the status. Without this check a handler would report
+        success while the image stays unchanged (issue #90).
+        """
+        result = proc.run(cfg)
+        status = result.index(0)
+        if status != Gimp.PDBStatusType.SUCCESS:
+            # On failure GIMP puts the error message, if any, in the second value.
+            msg = None
+            try:
+                if result.length() > 1:
+                    msg = result.index(1)
+            except Exception:
+                pass
+            nick = getattr(status, "value_nick", None) or str(status)
+            detail = f": {msg}" if isinstance(msg, str) and msg else ""
+            raise RuntimeError(f"{proc.get_name()} failed ({nick}){detail}")
+        return result
+
+    def _check_ok(self, ok, what):
+        """Raise if a direct libgimp call returned False.
+
+        Methods such as drawable.curves_spline() wrap a PDB procedure and, like
+        Procedure.run(), don't raise when GIMP rejects the call: they return
+        False. GIMP's reason is then available from the PDB's last error.
+        """
+        if ok is False:
+            msg = None
+            try:
+                msg = Gimp.get_pdb().get_last_error()
+            except Exception:
+                pass
+            raise RuntimeError(f"{what} failed" + (f": {msg}" if msg else ""))
+
     def _resolve_layer(self, image, layer_name, layer_index):
         """Resolve a layer by name, index, or fall back to the active layer."""
         if layer_name is not None:
@@ -2026,7 +2075,7 @@ class MCPPlugin(Gimp.PlugIn):
                             pass
                 except Exception:
                     pass
-                proc.run(cfg)
+                self._run_pdb(proc, cfg)
             return os.path.getsize(file_path)
         finally:
             if should_delete:
@@ -2124,7 +2173,7 @@ class MCPPlugin(Gimp.PlugIn):
                 cfg = proc.create_config()
                 cfg.set_property("image", image)
                 cfg.set_property("file", gio_file)
-                proc.run(cfg)
+                self._run_pdb(proc, cfg)
             else:
                 Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
             return {"status": "success", "results": {"status": "success", "file_path": file_path}}
@@ -2216,7 +2265,7 @@ class MCPPlugin(Gimp.PlugIn):
                 if proc:
                     cfg = proc.create_config()
                     cfg.set_property("drawable", drawable)
-                    proc.run(cfg)
+                    self._run_pdb(proc, cfg)
                 else:
                     proc2 = pdb.lookup_procedure("gimp-drawable-levels")
                     if proc2:
@@ -2229,7 +2278,7 @@ class MCPPlugin(Gimp.PlugIn):
                         cfg2.set_property("gamma", 1.0)
                         cfg2.set_property("low-output", 0.0)
                         cfg2.set_property("high-output", 1.0)
-                        proc2.run(cfg2)
+                        self._run_pdb(proc2, cfg2)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2282,19 +2331,21 @@ class MCPPlugin(Gimp.PlugIn):
                 # Try calling curves_spline as a direct method on the drawable
                 # (GI exposes gimp-drawable-curves-spline as drawable.curves_spline).
                 try:
-                    drawable.curves_spline(channel, pts_normalized)
+                    ok = drawable.curves_spline(channel, pts_normalized)
                 except Exception:
+                    ok = None  # the binding rejected the list; use the PDB below
+                if ok is not None:
+                    self._check_ok(ok, "curves_spline")
+                else:
                     # Fallback: use array.array typed buffer which GI may accept
                     import array as _arr
                     typed = _arr.array('d', pts_normalized)
-                    pdb = Gimp.get_pdb()
-                    proc = pdb.lookup_procedure("gimp-drawable-curves-spline")
-                    if proc:
-                        cfg = proc.create_config()
-                        cfg.set_property("drawable", drawable)
-                        cfg.set_property("channel",  channel)
-                        cfg.set_property("points",   typed)
-                        proc.run(cfg)
+                    proc = self._lookup_pdb("gimp-drawable-curves-spline")
+                    cfg = proc.create_config()
+                    cfg.set_property("drawable", drawable)
+                    cfg.set_property("channel",  channel)
+                    cfg.set_property("points",   typed)
+                    self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2357,17 +2408,15 @@ class MCPPlugin(Gimp.PlugIn):
             hue_range = HUE_RANGE_MAP.get(color_range.lower(), Gimp.HueRange.ALL)
             image.undo_group_start()
             try:
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-hue-saturation")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable", drawable)
-                    cfg.set_property("hue-range", hue_range)
-                    cfg.set_property("hue-offset", hue)
-                    cfg.set_property("lightness",  lightness)
-                    cfg.set_property("saturation", saturation)
-                    cfg.set_property("overlap", 0.0)
-                    proc.run(cfg)
+                proc = self._lookup_pdb("gimp-drawable-hue-saturation")
+                cfg = proc.create_config()
+                cfg.set_property("drawable", drawable)
+                cfg.set_property("hue-range", hue_range)
+                cfg.set_property("hue-offset", hue)
+                cfg.set_property("lightness",  lightness)
+                cfg.set_property("saturation", saturation)
+                cfg.set_property("overlap", 0.0)
+                self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2395,17 +2444,15 @@ class MCPPlugin(Gimp.PlugIn):
             color_range = RANGE_MAP.get(range_str.lower(), 1)
             image.undo_group_start()
             try:
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-color-balance")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable",      drawable)
-                    cfg.set_property("transfer-mode", color_range)
-                    cfg.set_property("cyan-red",      cyan_red)
-                    cfg.set_property("magenta-green", magenta_green)
-                    cfg.set_property("yellow-blue",   yellow_blue)
-                    cfg.set_property("preserve-lum",  True)
-                    proc.run(cfg)
+                proc = self._lookup_pdb("gimp-drawable-color-balance")
+                cfg = proc.create_config()
+                cfg.set_property("drawable",      drawable)
+                cfg.set_property("transfer-mode", color_range)
+                cfg.set_property("cyan-red",      cyan_red)
+                cfg.set_property("magenta-green", magenta_green)
+                cfg.set_property("yellow-blue",   yellow_blue)
+                cfg.set_property("preserve-lum",  True)
+                self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2434,7 +2481,7 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("radius",    radius)
                     cfg.set_property("amount",    amount / 100.0)
                     cfg.set_property("threshold", threshold)
-                    proc.run(cfg)
+                    self._run_pdb(proc, cfg)
                 else:
                     self._apply_gegl_filter(image, drawable, "gegl:unsharp-mask", {
                         "std-dev": radius,
@@ -2468,7 +2515,7 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("horizontal", int(radius_x * 2 + 1))
                     cfg.set_property("vertical",   int(radius_y * 2 + 1))
                     cfg.set_property("method",     0)
-                    proc.run(cfg)
+                    self._run_pdb(proc, cfg)
                 else:
                     self._apply_gegl_filter(image, drawable, "gegl:gaussian-blur", {
                         "std-dev-x": radius_x,
@@ -2520,13 +2567,11 @@ class MCPPlugin(Gimp.PlugIn):
             mode = MODE_MAP.get(mode_str.lower(), Gimp.DesaturateMode.LUMINANCE)
             image.undo_group_start()
             try:
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-desaturate")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable", drawable)
-                    cfg.set_property("desaturate-mode", mode)
-                    proc.run(cfg)
+                proc = self._lookup_pdb("gimp-drawable-desaturate")
+                cfg = proc.create_config()
+                cfg.set_property("drawable", drawable)
+                cfg.set_property("desaturate-mode", mode)
+                self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2543,13 +2588,11 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
             try:
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-invert")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable", drawable)
-                    cfg.set_property("linear", False)
-                    proc.run(cfg)
+                proc = self._lookup_pdb("gimp-drawable-invert")
+                cfg = proc.create_config()
+                cfg.set_property("drawable", drawable)
+                cfg.set_property("linear", False)
+                self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -2618,12 +2661,10 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 if autocrop:
-                    pdb = Gimp.get_pdb()
-                    proc = pdb.lookup_procedure("gimp-image-autocrop")
-                    if proc:
-                        cfg = proc.create_config()
-                        cfg.set_property("image", image)
-                        proc.run(cfg)
+                    proc = self._lookup_pdb("gimp-image-autocrop")
+                    cfg = proc.create_config()
+                    cfg.set_property("image", image)
+                    self._run_pdb(proc, cfg)
                 else:
                     _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
                     if non_empty:
@@ -2673,17 +2714,15 @@ class MCPPlugin(Gimp.PlugIn):
                 else:
                     import math
                     rad = math.radians(angle)
+                    proc = self._lookup_pdb("gimp-item-transform-rotate-default")
                     for layer in image.get_layers():
-                        pdb = Gimp.get_pdb()
-                        proc = pdb.lookup_procedure("gimp-item-transform-rotate-default")
-                        if proc:
-                            cfg = proc.create_config()
-                            cfg.set_property("item",      layer)
-                            cfg.set_property("angle",     rad)
-                            cfg.set_property("auto-center", True)
-                            cfg.set_property("center-x",  0)
-                            cfg.set_property("center-y",  0)
-                            proc.run(cfg)
+                        cfg = proc.create_config()
+                        cfg.set_property("item",      layer)
+                        cfg.set_property("angle",     rad)
+                        cfg.set_property("auto-center", True)
+                        cfg.set_property("center-x",  0)
+                        cfg.set_property("center-y",  0)
+                        self._run_pdb(proc, cfg)
                     image.flatten()
             finally:
                 image.undo_group_end()
@@ -2829,7 +2868,7 @@ class MCPPlugin(Gimp.PlugIn):
                 cfg.set_property("drawable",  drawable)
                 cfg.set_property("color",     color)
                 cfg.set_property("operation", op)
-                proc.run(cfg)
+                self._run_pdb(proc, cfg)
             finally:
                 Gimp.context_pop()
             Gimp.displays_flush()
@@ -3262,14 +3301,14 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
                 image.select_rectangle(Gimp.ChannelOps.REPLACE, x, y, width, height)
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-edit-stroke-selection")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable", drawable)
-                    proc.run(cfg)
-                Gimp.Selection.none(image)
+                proc = self._lookup_pdb("gimp-drawable-edit-stroke-selection")
+                cfg = proc.create_config()
+                cfg.set_property("drawable", drawable)
+                self._run_pdb(proc, cfg)
             finally:
+                # Clear the temporary selection even if stroking failed, so it
+                # doesn't restrict later edits.
+                Gimp.Selection.none(image)
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3299,14 +3338,14 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
                 Gimp.context_set_line_width(line_width)
                 image.select_ellipse(Gimp.ChannelOps.REPLACE, x, y, width, height)
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-drawable-edit-stroke-selection")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("drawable", drawable)
-                    proc.run(cfg)
-                Gimp.Selection.none(image)
+                proc = self._lookup_pdb("gimp-drawable-edit-stroke-selection")
+                cfg = proc.create_config()
+                cfg.set_property("drawable", drawable)
+                self._run_pdb(proc, cfg)
             finally:
+                # Clear the temporary selection even if stroking failed, so it
+                # doesn't restrict later edits.
+                Gimp.Selection.none(image)
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3508,7 +3547,7 @@ class MCPPlugin(Gimp.PlugIn):
         cfg.set_property("antialias", True)
         cfg.set_property("size",      float(size))
         cfg.set_property("font",      font_obj)
-        proc.run(cfg)
+        self._run_pdb(proc, cfg)
 
     def _find_new_layer(self, image, before_ids):
         """Return the first layer whose id is not in before_ids."""
@@ -3584,38 +3623,33 @@ class MCPPlugin(Gimp.PlugIn):
             new_color   = params.get("color", None)
             image    = self._get_image(image_index)
             layer    = self._resolve_layer(image, layer_name, None)
-            pdb      = Gimp.get_pdb()
             image.undo_group_start()
             try:
                 if new_text is not None:
-                    proc = pdb.lookup_procedure("gimp-text-layer-set-text")
-                    if proc:
-                        cfg = proc.create_config()
-                        cfg.set_property("layer", layer)
-                        cfg.set_property("text",  new_text)
-                        proc.run(cfg)
+                    proc = self._lookup_pdb("gimp-text-layer-set-text")
+                    cfg = proc.create_config()
+                    cfg.set_property("layer", layer)
+                    cfg.set_property("text",  new_text)
+                    self._run_pdb(proc, cfg)
                 if new_font is not None:
-                    proc = pdb.lookup_procedure("gimp-text-layer-set-font")
-                    if proc:
-                        cfg = proc.create_config()
-                        cfg.set_property("layer", layer)
-                        cfg.set_property("font",  new_font)
-                        proc.run(cfg)
+                    proc = self._lookup_pdb("gimp-text-layer-set-font")
+                    cfg = proc.create_config()
+                    cfg.set_property("layer", layer)
+                    cfg.set_property("font",  new_font)
+                    self._run_pdb(proc, cfg)
                 if new_size is not None:
-                    proc = pdb.lookup_procedure("gimp-text-layer-set-font-size")
-                    if proc:
-                        cfg = proc.create_config()
-                        cfg.set_property("layer",     layer)
-                        cfg.set_property("font-size", float(new_size))
-                        cfg.set_property("unit",      Gimp.Unit.pixel())
-                        proc.run(cfg)
+                    proc = self._lookup_pdb("gimp-text-layer-set-font-size")
+                    cfg = proc.create_config()
+                    cfg.set_property("layer",     layer)
+                    cfg.set_property("font-size", float(new_size))
+                    cfg.set_property("unit",      Gimp.Unit.pixel())
+                    self._run_pdb(proc, cfg)
                 if new_color is not None:
-                    proc = pdb.lookup_procedure("gimp-text-layer-set-color")
-                    if proc:
-                        cfg = proc.create_config()
-                        cfg.set_property("layer", layer)
-                        cfg.set_property("color", Gegl.Color.new(new_color))
-                        proc.run(cfg)
+                    proc = self._lookup_pdb("gimp-text-layer-set-color")
+                    cfg = proc.create_config()
+                    cfg.set_property("layer", layer)
+                    cfg.set_property("color", Gegl.Color.new(new_color))
+                    self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3693,25 +3727,26 @@ class MCPPlugin(Gimp.PlugIn):
                             int(radius * 2 + abs(dx) * 2 + 4),
                             int(radius * 2 + abs(dy) * 2 + 4),
                         )
-                    except Exception:
-                        # Fallback: plug-in-iwarp if GEGL warp fails
+                    except Exception as gegl_err:
+                        # Fallback: plug-in-iwarp if GEGL warp fails. If that is
+                        # missing or fails too, report it instead of a success.
                         proc = pdb.lookup_procedure("plug-in-iwarp")
-                        if proc:
-                            cfg = proc.create_config()
-                            try:
-                                cfg.set_property("run-mode",      Gimp.RunMode.NONINTERACTIVE)
-                                cfg.set_property("image",         image)
-                                cfg.set_property("drawable",      drawable)
-                                cfg.set_property("cursor-x",      int(x))
-                                cfg.set_property("cursor-y",      int(y))
-                                cfg.set_property("pressure",      amount)
-                                cfg.set_property("move-max-dist", int(radius))
-                                cfg.set_property("deform-type",   0)  # 0 = MOVE
-                                cfg.set_property("x",             int(x + dx))
-                                cfg.set_property("y",             int(y + dy))
-                                proc.run(cfg)
-                            except Exception:
-                                pass
+                        if proc is None:
+                            raise RuntimeError(
+                                f"GEGL warp failed ({gegl_err}) and plug-in-iwarp is not available"
+                            ) from gegl_err
+                        cfg = proc.create_config()
+                        cfg.set_property("run-mode",      Gimp.RunMode.NONINTERACTIVE)
+                        cfg.set_property("image",         image)
+                        cfg.set_property("drawable",      drawable)
+                        cfg.set_property("cursor-x",      int(x))
+                        cfg.set_property("cursor-y",      int(y))
+                        cfg.set_property("pressure",      amount)
+                        cfg.set_property("move-max-dist", int(radius))
+                        cfg.set_property("deform-type",   0)  # 0 = MOVE
+                        cfg.set_property("x",             int(x + dx))
+                        cfg.set_property("y",             int(y + dy))
+                        self._run_pdb(proc, cfg)
             finally:
                 image.undo_group_end()
 
@@ -3770,7 +3805,6 @@ class MCPPlugin(Gimp.PlugIn):
             drawable = self._resolve_layer(image, layer_name, None)
             image.undo_group_start()
             try:
-                pdb = Gimp.get_pdb()
 
                 # 1. Duplicate source layer to use as shadow base
                 shadow_layer = drawable.copy()
@@ -3791,15 +3825,14 @@ class MCPPlugin(Gimp.PlugIn):
                 # 4. Blur with plug-in-gauss (always available in GIMP 3.x)
                 if blur_radius > 0:
                     size = max(3, int(blur_radius * 2) | 1)  # must be odd, ≥ 3
-                    blur_proc = pdb.lookup_procedure("plug-in-gauss")
-                    if blur_proc:
-                        cfg = blur_proc.create_config()
-                        cfg.set_property("image",      image)
-                        cfg.set_property("drawable",   shadow_layer)
-                        cfg.set_property("horizontal", size)
-                        cfg.set_property("vertical",   size)
-                        cfg.set_property("method",     0)
-                        blur_proc.run(cfg)
+                    blur_proc = self._lookup_pdb("plug-in-gauss")
+                    cfg = blur_proc.create_config()
+                    cfg.set_property("image",      image)
+                    cfg.set_property("drawable",   shadow_layer)
+                    cfg.set_property("horizontal", size)
+                    cfg.set_property("vertical",   size)
+                    cfg.set_property("method",     0)
+                    self._run_pdb(blur_proc, cfg)
 
                 shadow_layer.set_name("Drop Shadow")
             finally:
@@ -4332,13 +4365,11 @@ class MCPPlugin(Gimp.PlugIn):
                     import tempfile
                     xcf_path = os.path.join(tempfile.gettempdir(), f"gimp_backup_{image.get_id()}.xcf")
                 gio_file = Gio.File.new_for_path(xcf_path)
-                pdb = Gimp.get_pdb()
-                proc = pdb.lookup_procedure("gimp-xcf-save")
-                if proc:
-                    cfg = proc.create_config()
-                    cfg.set_property("image", image)
-                    cfg.set_property("file", gio_file)
-                    proc.run(cfg)
+                proc = self._lookup_pdb("gimp-xcf-save")
+                cfg = proc.create_config()
+                cfg.set_property("image", image)
+                cfg.set_property("file", gio_file)
+                self._run_pdb(proc, cfg)
             # Delete all displays for this image
             for display in Gimp.get_displays():
                 try:
