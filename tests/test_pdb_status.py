@@ -70,6 +70,11 @@ class FakeProc:
 
 
 class FakePDB:
+    last_error = None
+
+    def get_last_error(self):
+        return FakePDB.last_error
+
     def lookup_procedure(self, name):
         if name not in PDB_PROCS:
             return None
@@ -77,7 +82,24 @@ class FakePDB:
         return FakeProc(name, status, message)
 
 
+class FakeDrawable:
+    """Drawable whose curves_spline() returns a preset result, as libgimp does."""
+
+    def __init__(self, curves_result):
+        self.curves_result = curves_result
+
+    def curves_spline(self, channel, points):
+        CALLS.append(("curves_spline", self.curves_result))
+        return self.curves_result
+
+
 class FakeImage:
+    def select_rectangle(self, *a):
+        CALLS.append(("select", "rectangle"))
+
+    def select_ellipse(self, *a):
+        CALLS.append(("select", "ellipse"))
+
     def undo_group_start(self):
         pass
 
@@ -109,6 +131,32 @@ def install_gi_stub():
 
         class DesaturateMode:
             LUMINANCE, LUMA, AVERAGE, LIGHTNESS = range(4)
+
+        class HistogramChannel:
+            VALUE, RED, GREEN, BLUE, ALPHA = range(5)
+
+        class StrokeMethod:
+            LINE = 0
+
+        class ChannelOps:
+            REPLACE = 2
+
+        class Selection:
+            @staticmethod
+            def none(image):
+                CALLS.append(("select", "none"))
+
+        @staticmethod
+        def context_set_stroke_method(method):
+            pass
+
+        @staticmethod
+        def context_set_line_width(width):
+            pass
+
+        @staticmethod
+        def context_pop():
+            pass
 
         @staticmethod
         def main(gtype, argv):
@@ -153,6 +201,7 @@ def install_gi_stub():
 
     repository.Gimp, repository.GLib, repository.GObject = Gimp, GLib, GObject
     repository.Gio = Gio
+    repository.Gegl = types.SimpleNamespace(Color=types.SimpleNamespace(new=lambda s: s))
     gi.repository = repository
     sys.modules["gi"] = gi
     sys.modules["gi.repository"] = repository
@@ -231,6 +280,32 @@ def main():
           None if r["status"] == "error" and "not found" in r["error"] else f"got {r}")
 
     # Handlers with an alternative for a missing procedure must still use it.
+    # Direct libgimp methods return False instead of raising (curves_spline).
+    real_resolve = plugin._resolve_layer
+    plugin._resolve_layer = lambda image, name, index: FakeDrawable(False)
+    scenario({})
+    FakePDB.last_error = "Item 'Background' (2) cannot be modified because its contents are locked"
+    r = plugin._adjust_curves({})
+    check("adjust_curves reports an error when curves_spline returns False",
+          None if r["status"] == "error" and "contents are locked" in r["error"] else f"got {r}")
+    FakePDB.last_error = None
+
+    plugin._resolve_layer = lambda image, name, index: FakeDrawable(True)
+    scenario({})
+    r = plugin._adjust_curves({})
+    check("adjust_curves reports success when curves_spline returns True",
+          None if r["status"] == "success" else f"got {r}")
+    plugin._resolve_layer = real_resolve
+
+    # A failed stroke must still clear the temporary selection.
+    plugin._push_paint_context = lambda: None
+    for handler, shape in (("_draw_rectangle", "rectangle"), ("_draw_ellipse", "ellipse")):
+        scenario({"gimp-drawable-edit-stroke-selection": (EXECUTION_ERROR, "locked")})
+        r = getattr(plugin, handler)({"width": 10, "height": 10})
+        check(f"{handler[1:]} clears its selection when the stroke fails",
+              None if r["status"] == "error" and CALLS[-1] == ("select", "none")
+              and ("select", shape) in CALLS else f"got {r}, calls {CALLS}")
+
     scenario({})
     plugin._apply_gegl_filter = lambda image, drawable, op, props: CALLS.append(("gegl", op))
     r = plugin._blur({})

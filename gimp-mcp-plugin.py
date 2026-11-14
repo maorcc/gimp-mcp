@@ -1972,6 +1972,21 @@ class MCPPlugin(Gimp.PlugIn):
             raise RuntimeError(f"{proc.get_name()} failed ({nick}){detail}")
         return result
 
+    def _check_ok(self, ok, what):
+        """Raise if a direct libgimp call returned False.
+
+        Methods such as drawable.curves_spline() wrap a PDB procedure and, like
+        Procedure.run(), don't raise when GIMP rejects the call: they return
+        False. GIMP's reason is then available from the PDB's last error.
+        """
+        if ok is False:
+            msg = None
+            try:
+                msg = Gimp.get_pdb().get_last_error()
+            except Exception:
+                pass
+            raise RuntimeError(f"{what} failed" + (f": {msg}" if msg else ""))
+
     def _resolve_layer(self, image, layer_name, layer_index):
         """Resolve a layer by name, index, or fall back to the active layer."""
         if layer_name is not None:
@@ -2316,8 +2331,12 @@ class MCPPlugin(Gimp.PlugIn):
                 # Try calling curves_spline as a direct method on the drawable
                 # (GI exposes gimp-drawable-curves-spline as drawable.curves_spline).
                 try:
-                    drawable.curves_spline(channel, pts_normalized)
+                    ok = drawable.curves_spline(channel, pts_normalized)
                 except Exception:
+                    ok = None  # the binding rejected the list; use the PDB below
+                if ok is not None:
+                    self._check_ok(ok, "curves_spline")
+                else:
                     # Fallback: use array.array typed buffer which GI may accept
                     import array as _arr
                     typed = _arr.array('d', pts_normalized)
@@ -3286,8 +3305,10 @@ class MCPPlugin(Gimp.PlugIn):
                 cfg = proc.create_config()
                 cfg.set_property("drawable", drawable)
                 self._run_pdb(proc, cfg)
-                Gimp.Selection.none(image)
             finally:
+                # Clear the temporary selection even if stroking failed, so it
+                # doesn't restrict later edits.
+                Gimp.Selection.none(image)
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -3321,8 +3342,10 @@ class MCPPlugin(Gimp.PlugIn):
                 cfg = proc.create_config()
                 cfg.set_property("drawable", drawable)
                 self._run_pdb(proc, cfg)
-                Gimp.Selection.none(image)
             finally:
+                # Clear the temporary selection even if stroking failed, so it
+                # doesn't restrict later edits.
+                Gimp.Selection.none(image)
                 Gimp.context_pop()
                 image.undo_group_end()
             Gimp.displays_flush()

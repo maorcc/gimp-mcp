@@ -64,6 +64,9 @@ def create_image():
         "Gimp.ImageType.RGB_IMAGE, 100, Gimp.LayerMode.NORMAL)",
         "_pdbtest_img.insert_layer(_pdbtest_layer, None, 0)",
         "Gimp.context_push()",
+        # A paint opacity or mode left over in the running GIMP would change the fill.
+        "Gimp.context_set_opacity(100.0)",
+        "Gimp.context_set_paint_mode(Gimp.LayerMode.NORMAL)",
         "Gimp.context_set_foreground(Gegl.Color.new('rgb(0.45, 0.45, 0.45)'))",
         "_pdbtest_layer.edit_fill(Gimp.FillType.FOREGROUND)",
         "_pdbtest_img.select_rectangle(Gimp.ChannelOps.REPLACE, 50, 50, 100, 100)",
