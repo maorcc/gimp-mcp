@@ -13,6 +13,13 @@ right command when the versions differ.
 
 ## [Unreleased]
 
+### Fixed
+- Tools that call GIMP procedures no longer report success when GIMP rejects the call
+  (for example on a locked layer) or doesn't have the procedure. They now return an
+  error with GIMP's message, and the image is left unchanged. This affects most
+  adjustment, filter, selection, drawing, text, transform and save tools, so a call that
+  used to "succeed" without changing anything may now return an error (#90).
+
 ## [0.3.0] - 2026-11-12
 
 ### Added
